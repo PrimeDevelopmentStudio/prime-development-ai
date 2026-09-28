@@ -6,7 +6,8 @@ const {
   PermissionsBitField,
   REST,
   Routes,
-  SlashCommandBuilder
+  SlashCommandBuilder,
+  EmbedBuilder
 } = require("discord.js");
 
 const { GoogleGenAI } = require("@google/genai");
@@ -14,16 +15,17 @@ const express = require("express");
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
-const GEMINI_KEY = process.env.GEMINI_API_KEY;
-const MODEL = process.env.GEMINI_MODEL || "gemini-3.8-flash";
+const API_KEY = process.env.GEMINI_API_KEY;
 
-if (!TOKEN || !CLIENT_ID || !GEMINI_KEY) {
-  console.error("❌ Missing environment variables!");
+const MODEL = "gemini-3.8-flash";
+
+if (!TOKEN || !CLIENT_ID || !API_KEY) {
+  console.error("❌ Missing Environment Variables");
   process.exit(1);
 }
 
 const ai = new GoogleGenAI({
-  apiKey: GEMINI_KEY
+  apiKey: API_KEY
 });
 
 const bot = new Client({
@@ -41,23 +43,20 @@ const cooldown = new Map();
 
 async function askAI(text) {
   try {
-    const r = await ai.models.generateContent({
+    const result = await ai.models.generateContent({
       model: MODEL,
       contents: text
     });
 
-    console.log("✅ Gemini response received");
-
-    return r.text || "⚠️ Empty AI response.";
-
+    return result.text || "⚠️ Empty AI response.";
   } catch (e) {
-    console.error("❌ GEMINI FULL ERROR:", e);
-
-    return `⚠️ Gemini Error:\n${e.message || e}`;
+    console.error("❌ GEMINI ERROR:", e);
+    return "⚠️ Gemini is temporarily unavailable.";
   }
 }
 
 const commands = [
+
   new SlashCommandBuilder()
     .setName("ai")
     .setDescription("Ask Prime AI")
@@ -69,19 +68,42 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("setaichannel")
-    .setDescription("Set this channel for automatic AI replies"),
+    .setDescription("Set AI channel"),
 
   new SlashCommandBuilder()
     .setName("removeaichannel")
-    .setDescription("Disable automatic AI replies"),
+    .setDescription("Remove AI channel"),
 
   new SlashCommandBuilder()
     .setName("setlogchannel")
-    .setDescription("Set this channel for logs"),
+    .setDescription("Set log channel"),
+
+  new SlashCommandBuilder()
+    .setName("announce")
+    .setDescription("Send an announcement")
+    .addStringOption(o =>
+      o.setName("message")
+       .setDescription("Announcement")
+       .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("embedannounce")
+    .setDescription("Send embed announcement")
+    .addStringOption(o =>
+      o.setName("title")
+       .setDescription("Announcement title")
+       .setRequired(true)
+    )
+    .addStringOption(o =>
+      o.setName("message")
+       .setDescription("Announcement message")
+       .setRequired(true)
+    ),
 
   new SlashCommandBuilder()
     .setName("warn")
-    .setDescription("Warn a member")
+    .setDescription("Warn member")
     .addUserOption(o =>
       o.setName("user")
        .setDescription("Member")
@@ -178,7 +200,7 @@ const commands = [
     .setDescription("Set slowmode")
     .addIntegerOption(o =>
       o.setName("seconds")
-       .setDescription("0-21600")
+       .setDescription("Seconds")
        .setMinValue(0)
        .setMaxValue(21600)
        .setRequired(true)
@@ -210,33 +232,43 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("help")
-    .setDescription("Show commands")
+    .setDescription("Bot commands")
+
 ].map(x => x.toJSON());
 
 bot.once("ready", async () => {
-  console.log(`✅ Logged in as ${bot.user.tag}`);
-  console.log(`🧠 Gemini: ${MODEL}`);
 
-  bot.user.setActivity("Prime Development Studio", {
-    type: 3
-  });
+  console.log("================================");
+  console.log(`✅ ${bot.user.tag} ONLINE`);
+  console.log(`🧠 ${MODEL}`);
+  console.log("================================");
 
-  const rest = new REST({ version: "10" })
-    .setToken(TOKEN);
+  bot.user.setActivity(
+    "Prime Development Studio",
+    { type: 3 }
+  );
 
   try {
+
+    const rest = new REST({ version: "10" })
+      .setToken(TOKEN);
+
     await rest.put(
       Routes.applicationCommands(CLIENT_ID),
       { body: commands }
     );
 
-    console.log(`✅ ${commands.length} commands registered`);
+    console.log(
+      `✅ ${commands.length} commands registered`
+    );
+
   } catch (e) {
-    console.error("❌ Command error:", e);
+    console.error("❌ Command Registration:", e);
   }
 });
 
 bot.on("interactionCreate", async i => {
+
   if (!i.isChatInputCommand()) return;
 
   const g = i.guild;
@@ -245,76 +277,164 @@ bot.on("interactionCreate", async i => {
   try {
 
     if (c === "ai") {
+
       await i.deferReply();
 
-      const q = i.options.getString("question");
+      const q =
+        i.options.getString("question");
 
-      const a = await askAI(
+      const answer = await askAI(
         `You are Prime AI for Prime Development Studio.
-Answer clearly and helpfully.
+Give helpful and clear answers.
 
-User:
+User question:
 ${q}`
       );
 
-      return i.editReply(a.slice(0, 1900));
+      return i.editReply(
+        answer.slice(0, 1900)
+      );
     }
 
     if (c === "setaichannel") {
-      aiChannels.set(g.id, i.channel.id);
-      return i.reply(`✅ AI channel set to ${i.channel}`);
+
+      aiChannels.set(
+        g.id,
+        i.channel.id
+      );
+
+      return i.reply(
+        `✅ AI channel set: ${i.channel}`
+      );
     }
 
     if (c === "removeaichannel") {
+
       aiChannels.delete(g.id);
-      return i.reply("✅ AI channel disabled.");
+
+      return i.reply(
+        "✅ Automatic AI disabled."
+      );
     }
 
     if (c === "setlogchannel") {
-      logChannels.set(g.id, i.channel.id);
-      return i.reply(`✅ Log channel set to ${i.channel}`);
+
+      logChannels.set(
+        g.id,
+        i.channel.id
+      );
+
+      return i.reply(
+        `✅ Log channel set: ${i.channel}`
+      );
+    }
+
+    if (c === "announce") {
+
+      const msg =
+        i.options.getString("message");
+
+      return i.reply(
+        `📢 **ANNOUNCEMENT**\n\n${msg}`
+      );
+    }
+
+    if (c === "embedannounce") {
+
+      const title =
+        i.options.getString("title");
+
+      const msg =
+        i.options.getString("message");
+
+      const embed = new EmbedBuilder()
+        .setTitle(`📢 ${title}`)
+        .setDescription(msg)
+        .setFooter({
+          text: "Prime Development Studio"
+        })
+        .setTimestamp();
+
+      return i.reply({
+        embeds: [embed]
+      });
     }
 
     if (c === "warn") {
-      const u = i.options.getUser("user");
-      const r = i.options.getString("reason");
-      const k = `${g.id}-${u.id}`;
 
-      const w = warnings.get(k) || [];
-      w.push(r);
-      warnings.set(k, w);
+      const u =
+        i.options.getUser("user");
 
-      return i.reply(`⚠️ ${u} warned.\nReason: ${r}`);
+      const r =
+        i.options.getString("reason");
+
+      const key =
+        `${g.id}-${u.id}`;
+
+      const list =
+        warnings.get(key) || [];
+
+      list.push(r);
+
+      warnings.set(key, list);
+
+      return i.reply(
+        `⚠️ ${u} warned.\n**Reason:** ${r}`
+      );
     }
 
     if (c === "warnings") {
-      const u = i.options.getUser("user");
-      const w = warnings.get(`${g.id}-${u.id}`) || [];
+
+      const u =
+        i.options.getUser("user");
+
+      const list =
+        warnings.get(`${g.id}-${u.id}`) || [];
+
+      if (!list.length)
+        return i.reply(
+          `✅ ${u} has no warnings.`
+        );
 
       return i.reply(
-        w.length
-          ? `⚠️ Warnings for ${u}:\n${w.map((x,n) => `${n+1}. ${x}`).join("\n")}`
-          : `✅ ${u} has no warnings.`
+        `⚠️ **Warnings for ${u}**\n` +
+        list.map(
+          (x,n) => `${n + 1}. ${x}`
+        ).join("\n")
       );
     }
 
     if (c === "clear") {
-      const n = i.options.getInteger("amount");
 
-      await i.channel.bulkDelete(n, true);
+      const n =
+        i.options.getInteger("amount");
+
+      await i.channel.bulkDelete(
+        n,
+        true
+      );
 
       return i.reply({
-        content: `🧹 Deleted ${n} messages.`,
+        content:
+          `🧹 Deleted ${n} messages.`,
         ephemeral: true
       });
     }
 
     if (c === "timeout") {
-      const u = i.options.getUser("user");
-      const m = i.options.getInteger("minutes");
-      const member = await g.members.fetch(u.id);
 
-      await member.timeout(m * 60000);
+      const u =
+        i.options.getUser("user");
+
+      const m =
+        i.options.getInteger("minutes");
+
+      const member =
+        await g.members.fetch(u.id);
+
+      await member.timeout(
+        m * 60000
+      );
 
       return i.reply(
         `🔇 ${u} timed out for ${m} minutes.`
@@ -322,182 +442,226 @@ ${q}`
     }
 
     if (c === "untimeout") {
-      const u = i.options.getUser("user");
-      const member = await g.members.fetch(u.id);
+
+      const u =
+        i.options.getUser("user");
+
+      const member =
+        await g.members.fetch(u.id);
 
       await member.timeout(null);
 
-      return i.reply(`🔊 Timeout removed from ${u}.`);
+      return i.reply(
+        `🔊 Timeout removed from ${u}.`
+      );
     }
 
     if (c === "kick") {
-      const u = i.options.getUser("user");
+
+      const u =
+        i.options.getUser("user");
 
       await g.members.kick(u.id);
 
-      return i.reply(`👢 ${u.tag} kicked.`);
+      return i.reply(
+        `👢 ${u.tag} kicked.`
+      );
     }
 
     if (c === "ban") {
-      const u = i.options.getUser("user");
+
+      const u =
+        i.options.getUser("user");
 
       await g.members.ban(u.id);
 
-      return i.reply(`🔨 ${u.tag} banned.`);
+      return i.reply(
+        `🔨 ${u.tag} banned.`
+      );
     }
 
     if (c === "unban") {
-      const id = i.options.getString("userid");
+
+      const id =
+        i.options.getString("userid");
 
       await g.members.unban(id);
 
-      return i.reply(`✅ ${id} unbanned.`);
+      return i.reply(
+        `✅ ${id} unbanned.`
+      );
     }
 
     if (c === "lock") {
+
       await i.channel.permissionOverwrites.edit(
         g.roles.everyone,
         { SendMessages: false }
       );
 
-      return i.reply("🔒 Channel locked.");
+      return i.reply(
+        "🔒 Channel locked."
+      );
     }
 
     if (c === "unlock") {
+
       await i.channel.permissionOverwrites.edit(
         g.roles.everyone,
         { SendMessages: null }
       );
 
-      return i.reply("🔓 Channel unlocked.");
+      return i.reply(
+        "🔓 Channel unlocked."
+      );
     }
 
     if (c === "slowmode") {
-      const s = i.options.getInteger("seconds");
+
+      const s =
+        i.options.getInteger("seconds");
 
       await i.channel.setRateLimitPerUser(s);
 
-      return i.reply(`🐌 Slowmode: ${s}s`);
+      return i.reply(
+        `🐌 Slowmode set to ${s}s.`
+      );
     }
 
     if (c === "serverinfo") {
+
       return i.reply(
-        `📊 **${g.name}**\n👥 Members: ${g.memberCount}\n📁 Channels: ${g.channels.cache.size}`
+        `📊 **${g.name}**\n` +
+        `👥 Members: ${g.memberCount}\n` +
+        `📁 Channels: ${g.channels.cache.size}\n` +
+        `🎭 Roles: ${g.roles.cache.size}`
       );
     }
 
     if (c === "userinfo") {
+
       const u =
-        i.options.getUser("user") || i.user;
+        i.options.getUser("user") ||
+        i.user;
 
       return i.reply(
-        `👤 **${u.tag}**\n🆔 ${u.id}\n🤖 Bot: ${u.bot}`
+        `👤 **${u.tag}**\n` +
+        `🆔 ${u.id}\n` +
+        `🤖 Bot: ${u.bot}`
       );
     }
 
     if (c === "avatar") {
+
       const u =
-        i.options.getUser("user") || i.user;
+        i.options.getUser("user") ||
+        i.user;
 
       return i.reply(
         u.displayAvatarURL({
-          size: 1024,
-          extension: "png"
+          size: 1024
         })
       );
     }
 
     if (c === "settings") {
+
       return i.reply(
-        `⚙️ **Prime AI Settings**\n\n🤖 AI: ${
+        `⚙️ **Prime AI Settings**\n\n` +
+        `🤖 AI: ${
           aiChannels.get(g.id)
-            ? `<#${aiChannels.get(g.id)}>`
-            : "Not Set"
-        }\n📋 Logs: ${
+          ? `<#${aiChannels.get(g.id)}>`
+          : "Not Set"
+        }\n` +
+        `📋 Logs: ${
           logChannels.get(g.id)
-            ? `<#${logChannels.get(g.id)}>`
-            : "Not Set"
-        }\n🧠 Model: \`${MODEL}\``
+          ? `<#${logChannels.get(g.id)}>`
+          : "Not Set"
+        }\n` +
+        `🧠 Model: \`${MODEL}\``
       );
     }
 
     if (c === "help") {
+
       return i.reply(
-        `🤖 **Prime Development AI**
+        `🤖 **PRIME DEVELOPMENT AI**\n\n` +
+        `🧠 **AI**\n` +
+        `/ai\n/setaichannel\n/removeaichannel\n\n` +
 
-🧠 AI
-/ai
-/setaichannel
-/removeaichannel
+        `📢 **Announcements**\n` +
+        `/announce\n/embedannounce\n\n` +
 
-🛡️ Moderation
-/warn
-/warnings
-/clear
-/timeout
-/untimeout
-/kick
-/ban
-/unban
+        `🛡️ **Moderation**\n` +
+        `/warn\n/warnings\n/clear\n/timeout\n/untimeout\n/kick\n/ban\n/unban\n\n` +
 
-🔒 Channel
-/lock
-/unlock
-/slowmode
+        `🔒 **Channel**\n` +
+        `/lock\n/unlock\n/slowmode\n\n` +
 
-📊 Info
-/serverinfo
-/userinfo
-/avatar
+        `📊 **Info**\n` +
+        `/serverinfo\n/userinfo\n/avatar\n\n` +
 
-⚙️ System
-/setlogchannel
-/settings
-/help`
+        `⚙️ **System**\n` +
+        `/setlogchannel\n/settings\n/help`
       );
     }
 
   } catch (e) {
-    console.error("❌ Interaction:", e);
+
+    console.error(
+      "❌ Interaction Error:",
+      e
+    );
 
     if (!i.replied && !i.deferred) {
-      await i.reply("❌ An error occurred.");
+      await i.reply(
+        "❌ An error occurred."
+      );
     }
   }
 });
 
-bot.on("messageCreate", async m => {
-  if (m.author.bot || !m.guild) return;
+bot.on("messageCreate", async message => {
 
-  if (aiChannels.get(m.guild.id) !== m.channel.id) {
-    return;
-  }
+  if (message.author.bot) return;
+  if (!message.guild) return;
 
-  const key = `${m.guild.id}-${m.author.id}`;
+  if (
+    aiChannels.get(message.guild.id) !==
+    message.channel.id
+  ) return;
+
+  const key =
+    `${message.guild.id}-${message.author.id}`;
+
   const now = Date.now();
 
-  if (now - (cooldown.get(key) || 0) < 5000) {
-    return;
-  }
+  if (
+    now - (cooldown.get(key) || 0) < 5000
+  ) return;
 
   cooldown.set(key, now);
 
-  await m.channel.sendTyping();
+  await message.channel.sendTyping();
 
   const answer = await askAI(
-    `You are Prime AI, the official assistant of Prime Development Studio.
+    `You are Prime AI in Prime Development Studio.
 
-Answer the user naturally and helpfully.
+Answer naturally and helpfully.
 
 User:
-${m.author.username}
+${message.author.username}
 
 Message:
-${m.content}`
+${message.content}`
   );
 
-  for (let x = 0; x < answer.length; x += 1900) {
-    await m.channel.send(
+  for (
+    let x = 0;
+    x < answer.length;
+    x += 1900
+  ) {
+    await message.channel.send(
       answer.slice(x, x + 1900)
     );
   }
@@ -506,7 +670,9 @@ ${m.content}`
 const app = express();
 
 app.get("/", (req, res) => {
-  res.send("🚀 Prime Development AI is online!");
+  res.send(
+    "🚀 Prime Development AI is Online!"
+  );
 });
 
 app.get("/health", (req, res) => {
@@ -519,7 +685,9 @@ app.get("/health", (req, res) => {
 
 app.listen(
   process.env.PORT || 3000,
-  () => console.log("🌐 Web server online")
+  () => console.log(
+    "🌐 Web server online"
+  )
 );
 
 bot.login(TOKEN);
