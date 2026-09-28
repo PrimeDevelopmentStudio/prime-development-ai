@@ -1,7 +1,6 @@
 {
   "name": "prime-development-ai",
   "version": "1.0.0",
-  "description": "Prime Development Studio AI Discord Bot",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
