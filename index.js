@@ -852,27 +852,257 @@ ${question}`
       );
     }
 
-    // ---------- SETTINGS ----------
+    // ================= SETTINGS =================
 
-    if (command === "settings") {
+      if (
+        interaction.commandName ===
+        "settings"
+      ) {
 
-      const aiChannel =
-        aiChannels.get(interaction.guild.id);
+        const aiChannel =
+          aiChannels.get(
+            interaction.guild.id
+          );
 
-      const logChannel =
-        logChannels.get(interaction.guild.id);
+        const logChannel =
+          logChannels.get(
+            interaction.guild.id
+          );
 
-      return interaction.reply(
-        `⚙️ **Prime AI Settings**\n\n` +
-        `🤖 AI Channel: ${
-          aiChannel
-            ? `<#${aiChannel}>`
-            : "Not configured"
-        }\n` +
-        `📋 Log Channel: ${
-          logChannel
-            ? `<#${logChannel}>`
-            : "Not configured"
-        }\n` +
-        `🧠 Gemini Model: \`${GEMINI_MODEL}\``
-  
+        return interaction.reply(
+`⚙️ **PRIME AI SETTINGS**
+
+🤖 AI Channel:
+${
+  aiChannel
+    ? `<#${aiChannel}>`
+    : "Not Set"
+}
+
+📋 Log Channel:
+${
+  logChannel
+    ? `<#${logChannel}>`
+    : "Not Set"
+}
+
+🧠 Gemini:
+\`${GEMINI_MODEL}\``
+        );
+      }
+
+      // ================= HELP =================
+
+      if (
+        interaction.commandName ===
+        "help"
+      ) {
+
+        return interaction.reply(
+`🤖 **PRIME DEVELOPMENT AI**
+
+### 🤖 AI
+/ai
+/setaichannel
+/removeaichannel
+
+### 🛡️ MODERATION
+/warn
+/warnings
+/clear
+/timeout
+/untimeout
+/kick
+/ban
+/unban
+
+### 🔒 CHANNEL
+/lock
+/unlock
+/slowmode
+/setlogchannel
+
+### ℹ️ INFORMATION
+/serverinfo
+/userinfo
+/avatar
+/channelinfo
+/settings`
+        );
+      }
+
+    } catch (error) {
+
+      console.error(
+        "❌ COMMAND ERROR:",
+        error
+      );
+
+      const message =
+        "❌ Command execution failed.";
+
+      if (
+        interaction.deferred ||
+        interaction.replied
+      ) {
+
+        await interaction.editReply(
+          message
+        ).catch(() => {});
+
+      } else {
+
+        await interaction.reply({
+          content: message,
+          ephemeral: true
+        }).catch(() => {});
+      }
+    }
+  }
+);
+
+// ================= AUTO AI =================
+
+client.on(
+  "messageCreate",
+  async message => {
+
+    if (message.author.bot) return;
+    if (!message.guild) return;
+
+    const channelId =
+      aiChannels.get(
+        message.guild.id
+      );
+
+    if (!channelId) return;
+
+    if (
+      message.channel.id !== channelId
+    ) {
+      return;
+    }
+
+    // Anti-spam cooldown
+    const key =
+      `${message.guild.id}-${message.author.id}`;
+
+    const now =
+      Date.now();
+
+    const last =
+      cooldowns.get(key) || 0;
+
+    if (
+      now - last < 1500
+    ) {
+      return;
+    }
+
+    cooldowns.set(
+      key,
+      now
+    );
+
+    try {
+
+      await message.channel.sendTyping();
+
+      const answer =
+        await askAI(
+`You are Prime AI for Prime Development Studio.
+
+Reply naturally and helpfully.
+
+Language rules:
+- English → English
+- Hindi → Hindi
+- Hinglish → Hinglish
+
+User message:
+${message.content}`
+        );
+
+      await message.reply({
+        content:
+          answer.slice(0, 4000),
+        allowedMentions: {
+          repliedUser: false
+        }
+      });
+
+    } catch (error) {
+
+      console.error(
+        "❌ AUTO AI ERROR:",
+        error
+      );
+
+      await message.reply(
+        "⚠️ AI temporarily unavailable."
+      ).catch(() => {});
+    }
+  }
+);
+
+// ================= WEB SERVER =================
+
+const app =
+  express();
+
+app.get(
+  "/",
+  (req, res) => {
+
+    res.send(
+      "🚀 Prime Development Studio AI Bot is Online!"
+    );
+  }
+);
+
+app.get(
+  "/health",
+  (req, res) => {
+
+    res.json({
+      status: "online",
+      bot:
+        client.user
+          ? client.user.tag
+          : "starting",
+      model:
+        GEMINI_MODEL
+    });
+  }
+);
+
+const PORT =
+  process.env.PORT || 3000;
+
+app.listen(
+  PORT,
+  () => {
+
+    console.log(
+      `🌐 Web server running on port ${PORT}`
+    );
+  }
+);
+
+// ================= LOGIN =================
+
+client.login(TOKEN)
+  .then(() => {
+
+    console.log(
+      "🚀 Discord login successful"
+    );
+
+  })
+  .catch(error => {
+
+    console.error(
+      "❌ Discord login failed:",
+      error
+    );
+  });
