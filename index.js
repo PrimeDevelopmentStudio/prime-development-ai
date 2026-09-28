@@ -6,20 +6,18 @@ const {
   PermissionsBitField,
   REST,
   Routes,
-  SlashCommandBuilder,
+  SlashCommandBuilder
 } = require("discord.js");
 
 const { GoogleGenAI } = require("@google/genai");
 const express = require("express");
 
-// ================= CONFIG =================
-
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GEMINI_KEY = process.env.GEMINI_API_KEY;
 
-// You can change this from Render Environment Variables
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const GEMINI_MODEL =
+  process.env.GEMINI_MODEL || "gemini-2.5-flash";
 
 if (!TOKEN || !CLIENT_ID || !GEMINI_KEY) {
   console.error("❌ Missing environment variables!");
@@ -27,27 +25,21 @@ if (!TOKEN || !CLIENT_ID || !GEMINI_KEY) {
 }
 
 const ai = new GoogleGenAI({
-  apiKey: GEMINI_KEY,
+  apiKey: GEMINI_KEY
 });
-
-// ================= DISCORD =================
 
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-  ],
+    GatewayIntentBits.MessageContent
+  ]
 });
-
-// ================= DATA =================
 
 const aiChannels = new Map();
 const logChannels = new Map();
 const warnings = new Map();
 const cooldowns = new Map();
-
-// ================= AI =================
 
 async function askAI(prompt) {
   const maxRetries = 4;
@@ -55,59 +47,65 @@ async function askAI(prompt) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       console.log(
-        `🤖 Gemini request | Model: ${GEMINI_MODEL} | Attempt: ${attempt}`
+        `🤖 Gemini attempt ${attempt}/${maxRetries}`
       );
 
       const response = await ai.models.generateContent({
         model: GEMINI_MODEL,
-        contents: prompt,
+        contents: prompt
       });
 
-      const text = response.text;
+      const answer = response.text;
 
-      if (text && text.trim()) {
+      if (answer && answer.trim()) {
         console.log("✅ Gemini response received");
-        return text.trim();
+        return answer.trim();
       }
 
       return "⚠️ AI returned an empty response.";
 
     } catch (error) {
-      const message = String(error?.message || error);
+      const errorText =
+        String(error?.message || error);
 
-      console.error(`❌ Gemini attempt ${attempt}: ${message}`);
+      console.error(
+        `❌ Gemini error: ${errorText}`
+      );
 
       const temporary =
-        message.includes("503") ||
-        message.includes("UNAVAILABLE") ||
-        message.includes("429") ||
-        message.includes("RESOURCE_EXHAUSTED") ||
-        message.includes("high demand");
+        errorText.includes("503") ||
+        errorText.includes("UNAVAILABLE") ||
+        errorText.includes("429") ||
+        errorText.includes("RESOURCE_EXHAUSTED") ||
+        errorText.includes("high demand");
 
       if (!temporary || attempt === maxRetries) {
-        return `⚠️ AI error: ${message.slice(0, 500)}`;
+        return "⚠️ Gemini is temporarily unavailable. Please try again.";
       }
 
-      // Exponential retry: 2s, 4s, 8s...
-      const wait = 2000 * Math.pow(2, attempt - 1);
+      const wait =
+        2000 * Math.pow(2, attempt - 1);
 
-      console.log(`⏳ Gemini busy. Retrying in ${wait / 1000}s...`);
+      console.log(
+        `⏳ Retrying in ${wait / 1000}s...`
+      );
 
-      await new Promise(resolve => setTimeout(resolve, wait));
+      await new Promise(resolve =>
+        setTimeout(resolve, wait)
+      );
     }
   }
 
-  return "⚠️ Gemini is temporarily unavailable. Please try again.";
+  return "⚠️ AI temporarily unavailable.";
 }
-
-// ================= LOGGING =================
 
 async function sendLog(guild, text) {
   const channelId = logChannels.get(guild.id);
 
   if (!channelId) return;
 
-  const channel = guild.channels.cache.get(channelId);
+  const channel =
+    guild.channels.cache.get(channelId);
 
   if (!channel) return;
 
@@ -115,8 +113,6 @@ async function sendLog(guild, text) {
     await channel.send(text);
   } catch {}
 }
-
-// ================= COMMANDS =================
 
 const commands = [
 
@@ -132,15 +128,15 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("setaichannel")
-    .setDescription("Set the AI channel"),
+    .setDescription("Set current channel as AI channel"),
 
   new SlashCommandBuilder()
     .setName("removeaichannel")
-    .setDescription("Remove the AI channel"),
+    .setDescription("Remove AI channel"),
 
   new SlashCommandBuilder()
     .setName("setlogchannel")
-    .setDescription("Set the moderation log channel"),
+    .setDescription("Set current channel as log channel"),
 
   new SlashCommandBuilder()
     .setName("warn")
@@ -182,7 +178,7 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("timeout")
-    .setDescription("Timeout a member")
+    .setDescription("Timeout member")
     .addUserOption(option =>
       option
         .setName("user")
@@ -210,7 +206,7 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("kick")
-    .setDescription("Kick a member")
+    .setDescription("Kick member")
     .addUserOption(option =>
       option
         .setName("user")
@@ -225,7 +221,7 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("ban")
-    .setDescription("Ban a member")
+    .setDescription("Ban member")
     .addUserOption(option =>
       option
         .setName("user")
@@ -240,7 +236,7 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("unban")
-    .setDescription("Unban a user")
+    .setDescription("Unban user")
     .addStringOption(option =>
       option
         .setName("userid")
@@ -250,11 +246,11 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("lock")
-    .setDescription("Lock current channel"),
+    .setDescription("Lock channel"),
 
   new SlashCommandBuilder()
     .setName("unlock")
-    .setDescription("Unlock current channel"),
+    .setDescription("Unlock channel"),
 
   new SlashCommandBuilder()
     .setName("slowmode")
@@ -279,7 +275,6 @@ const commands = [
       option
         .setName("user")
         .setDescription("User")
-        .setRequired(false)
     ),
 
   new SlashCommandBuilder()
@@ -289,7 +284,6 @@ const commands = [
       option
         .setName("user")
         .setDescription("User")
-        .setRequired(false)
     ),
 
   new SlashCommandBuilder()
@@ -302,807 +296,192 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("help")
-    .setDescription("Show bot commands"),
+    .setDescription("Show all commands")
 
 ].map(command => command.toJSON());
 
-// ================= READY =================
-
 client.once("ready", async () => {
 
-  console.log("=================================");
-  console.log(`✅ Logged in as ${client.user.tag}`);
-  console.log(`🆔 Bot ID: ${client.user.id}`);
-  console.log(`🤖 Gemini Model: ${GEMINI_MODEL}`);
-  console.log("=================================");
+  console.log("==============================");
+  console.log(`✅ Logged in: ${client.user.tag}`);
+  console.log(`🧠 Gemini: ${GEMINI_MODEL}`);
+  console.log("==============================");
 
-  client.user.setActivity("Prime Development Studio", {
-    type: 3,
-  });
+  client.user.setActivity(
+    "Prime Development Studio",
+    { type: 3 }
+  );
 
   try {
-
-    const rest = new REST({ version: "10" }).setToken(TOKEN);
+    const rest =
+      new REST({ version: "10" })
+        .setToken(TOKEN);
 
     await rest.put(
       Routes.applicationCommands(CLIENT_ID),
       {
-        body: commands,
+        body: commands
       }
     );
 
-    console.log("✅ Slash commands registered");
+    console.log(
+      `✅ ${commands.length} commands registered`
+    );
 
   } catch (error) {
-    console.error("❌ Command registration error:", error);
-  }
-});
-
-// ================= INTERACTIONS =================
-
-client.on("interactionCreate", async interaction => {
-
-  if (!interaction.isChatInputCommand()) return;
-
-  const command = interaction.commandName;
-
-  try {
-
-    // ---------- AI ----------
-
-    if (command === "ai") {
-
-      const question =
-        interaction.options.getString("question");
-
-      await interaction.deferReply();
-
-      const answer = await askAI(
-        `You are Prime AI, the official AI assistant of Prime Development Studio.
-
-Be helpful, friendly and concise.
-Answer in the same language/style as the user.
-If the user uses Hinglish, reply in Hinglish.
-
-User question:
-${question}`
-      );
-
-      return interaction.editReply(answer.slice(0, 4000));
-    }
-
-    // ---------- SET AI CHANNEL ----------
-
-    if (command === "setaichannel") {
-
-      if (
-        !interaction.memberPermissions.has(
-          PermissionsBitField.Flags.ManageGuild
-        )
-      ) {
-        return interaction.reply({
-          content: "❌ You need Manage Server permission.",
-          ephemeral: true,
-        });
-      }
-
-      aiChannels.set(
-        interaction.guild.id,
-        interaction.channel.id
-      );
-
-      return interaction.reply(
-        `✅ AI channel set to <#${interaction.channel.id}>`
-      );
-    }
-
-    // ---------- REMOVE AI CHANNEL ----------
-
-    if (command === "removeaichannel") {
-
-      aiChannels.delete(interaction.guild.id);
-
-      return interaction.reply(
-        "✅ AI channel removed."
-      );
-    }
-
-    // ---------- LOG CHANNEL ----------
-
-    if (command === "setlogchannel") {
-
-      if (
-        !interaction.memberPermissions.has(
-          PermissionsBitField.Flags.ManageGuild
-        )
-      ) {
-        return interaction.reply({
-          content: "❌ You need Manage Server permission.",
-          ephemeral: true,
-        });
-      }
-
-      logChannels.set(
-        interaction.guild.id,
-        interaction.channel.id
-      );
-
-      return interaction.reply(
-        `✅ Log channel set to <#${interaction.channel.id}>`
-      );
-    }
-
-    // ---------- WARN ----------
-
-    if (command === "warn") {
-
-      if (
-        !interaction.memberPermissions.has(
-          PermissionsBitField.Flags.ModerateMembers
-        )
-      ) {
-        return interaction.reply({
-          content: "❌ You need Moderate Members permission.",
-          ephemeral: true,
-        });
-      }
-
-      const user =
-        interaction.options.getUser("user");
-
-      const reason =
-        interaction.options.getString("reason");
-
-      const key =
-        `${interaction.guild.id}-${user.id}`;
-
-      const current =
-        warnings.get(key) || [];
-
-      current.push({
-        reason,
-        moderator: interaction.user.id,
-        time: new Date().toISOString(),
-      });
-
-      warnings.set(key, current);
-
-      await sendLog(
-        interaction.guild,
-        `⚠️ **Warning**\nUser: ${user}\nModerator: ${interaction.user}\nReason: ${reason}`
-      );
-
-      return interaction.reply(
-        `⚠️ ${user} has been warned.\nReason: ${reason}`
-      );
-    }
-
-    // ---------- WARNINGS ----------
-
-    if (command === "warnings") {
-
-      const user =
-        interaction.options.getUser("user");
-
-      const key =
-        `${interaction.guild.id}-${user.id}`;
-
-      const list =
-        warnings.get(key) || [];
-
-      if (!list.length) {
-        return interaction.reply(
-          `✅ ${user} has no warnings.`
-        );
-      }
-
-      const text = list
-        .map(
-          (w, i) =>
-            `**${i + 1}.** ${w.reason}`
-        )
-        .join("\n");
-
-      return interaction.reply(
-        `⚠️ Warnings for ${user}:\n${text}`
-      );
-    }
-
-    // ---------- CLEAR ----------
-
-    if (command === "clear") {
-
-      if (
-        !interaction.memberPermissions.has(
-          PermissionsBitField.Flags.ManageMessages
-        )
-      ) {
-        return interaction.reply({
-          content: "❌ You need Manage Messages permission.",
-          ephemeral: true,
-        });
-      }
-
-      const amount =
-        interaction.options.getInteger("amount");
-
-      await interaction.channel.bulkDelete(
-        amount,
-        true
-      );
-
-      return interaction.reply({
-        content: `🧹 Deleted ${amount} messages.`,
-        ephemeral: true,
-      });
-    }
-
-    // ---------- TIMEOUT ----------
-
-    if (command === "timeout") {
-
-      if (
-        !interaction.memberPermissions.has(
-          PermissionsBitField.Flags.ModerateMembers
-        )
-      ) {
-        return interaction.reply({
-          content: "❌ You need Moderate Members permission.",
-          ephemeral: true,
-        });
-      }
-
-      const user =
-        interaction.options.getUser("user");
-
-      const minutes =
-        interaction.options.getInteger("minutes");
-
-      const member =
-        await interaction.guild.members.fetch(user.id);
-
-      await member.timeout(
-        minutes * 60 * 1000,
-        `Timeout by ${interaction.user.tag}`
-      );
-
-      await sendLog(
-        interaction.guild,
-        `🔇 ${user} was timed out for ${minutes} minutes by ${interaction.user}.`
-      );
-
-      return interaction.reply(
-        `🔇 ${user} timed out for ${minutes} minutes.`
-      );
-    }
-
-    // ---------- UNTIMEOUT ----------
-
-    if (command === "untimeout") {
-
-      if (
-        !interaction.memberPermissions.has(
-          PermissionsBitField.Flags.ModerateMembers
-        )
-      ) {
-        return interaction.reply({
-          content: "❌ You need Moderate Members permission.",
-          ephemeral: true,
-        });
-      }
-
-      const user =
-        interaction.options.getUser("user");
-
-      const member =
-        await interaction.guild.members.fetch(user.id);
-
-      await member.timeout(null);
-
-      return interaction.reply(
-        `🔊 Timeout removed from ${user}.`
-      );
-    }
-
-    // ---------- KICK ----------
-
-    if (command === "kick") {
-
-      if (
-        !interaction.memberPermissions.has(
-          PermissionsBitField.Flags.KickMembers
-        )
-      ) {
-        return interaction.reply({
-          content: "❌ You need Kick Members permission.",
-          ephemeral: true,
-        });
-      }
-
-      const user =
-        interaction.options.getUser("user");
-
-      const reason =
-        interaction.options.getString("reason") ||
-        "No reason provided";
-
-      const member =
-        await interaction.guild.members.fetch(user.id);
-
-      await member.kick(reason);
-
-      await sendLog(
-        interaction.guild,
-        `👢 ${user.tag} was kicked by ${interaction.user.tag}\nReason: ${reason}`
-      );
-
-      return interaction.reply(
-        `👢 ${user.tag} has been kicked.`
-      );
-    }
-
-    // ---------- BAN ----------
-
-    if (command === "ban") {
-
-      if (
-        !interaction.memberPermissions.has(
-          PermissionsBitField.Flags.BanMembers
-        )
-      ) {
-        return interaction.reply({
-          content: "❌ You need Ban Members permission.",
-          ephemeral: true,
-        });
-      }
-
-      const user =
-        interaction.options.getUser("user");
-
-      const reason =
-        interaction.options.getString("reason") ||
-        "No reason provided";
-
-      const member =
-        await interaction.guild.members.fetch(user.id);
-
-      await member.ban({
-        reason,
-      });
-
-      await sendLog(
-        interaction.guild,
-        `🔨 ${user.tag} was banned by ${interaction.user.tag}\nReason: ${reason}`
-      );
-
-      return interaction.reply(
-        `🔨 ${user.tag} has been banned.`
-      );
-    }
-
-    // ---------- UNBAN ----------
-
-    if (command === "unban") {
-
-      if (
-        !interaction.memberPermissions.has(
-          PermissionsBitField.Flags.BanMembers
-        )
-      ) {
-        return interaction.reply({
-          content: "❌ You need Ban Members permission.",
-          ephemeral: true,
-        });
-      }
-
-      const userId =
-        interaction.options.getString("userid");
-
-      await interaction.guild.members.unban(userId);
-
-      return interaction.reply(
-        `✅ User \`${userId}\` has been unbanned.`
-      );
-    }
-
-    // ---------- LOCK ----------
-
-    if (command === "lock") {
-
-      if (
-        !interaction.memberPermissions.has(
-          PermissionsBitField.Flags.ManageChannels
-        )
-      ) {
-        return interaction.reply({
-          content: "❌ You need Manage Channels permission.",
-          ephemeral: true,
-        });
-      }
-
-      await interaction.channel.permissionOverwrites.edit(
-        interaction.guild.roles.everyone,
-        {
-          SendMessages: false,
-        }
-      );
-
-      return interaction.reply(
-        "🔒 Channel locked."
-      );
-    }
-
-    // ---------- UNLOCK ----------
-
-    if (command === "unlock") {
-
-      if (
-        !interaction.memberPermissions.has(
-          PermissionsBitField.Flags.ManageChannels
-        )
-      ) {
-        return interaction.reply({
-          content: "❌ You need Manage Channels permission.",
-          ephemeral: true,
-        });
-      }
-
-      await interaction.channel.permissionOverwrites.edit(
-        interaction.guild.roles.everyone,
-        {
-          SendMessages: null,
-        }
-      );
-
-      return interaction.reply(
-        "🔓 Channel unlocked."
-      );
-    }
-
-    // ---------- SLOWMODE ----------
-
-    if (command === "slowmode") {
-
-      if (
-        !interaction.memberPermissions.has(
-          PermissionsBitField.Flags.ManageChannels
-        )
-      ) {
-        return interaction.reply({
-          content: "❌ You need Manage Channels permission.",
-          ephemeral: true,
-        });
-      }
-
-      const seconds =
-        interaction.options.getInteger("seconds");
-
-      await interaction.channel.setRateLimitPerUser(
-        seconds
-      );
-
-      return interaction.reply(
-        `🐌 Slowmode set to ${seconds} seconds.`
-      );
-    }
-
-    // ---------- SERVER INFO ----------
-
-    if (command === "serverinfo") {
-
-      const guild = interaction.guild;
-
-      return interaction.reply(
-        `🏠 **${guild.name}**\n\n` +
-        `👥 Members: ${guild.memberCount}\n` +
-        `💬 Channels: ${guild.channels.cache.size}\n` +
-        `🆔 ID: ${guild.id}\n` +
-        `👑 Owner: <@${guild.ownerId}>`
-      );
-    }
-
-    // ---------- USER INFO ----------
-
-    if (command === "userinfo") {
-
-      const user =
-        interaction.options.getUser("user") ||
-        interaction.user;
-
-      const member =
-        await interaction.guild.members.fetch(user.id);
-
-      return interaction.reply(
-        `👤 **User Information**\n\n` +
-        `Name: ${user.tag}\n` +
-        `ID: ${user.id}\n` +
-        `Joined: <t:${Math.floor(member.joinedTimestamp / 1000)}:F>\n` +
-        `Created: <t:${Math.floor(user.createdTimestamp / 1000)}:F>`
-      );
-    }
-
-    // ---------- AVATAR ----------
-
-    if (command === "avatar") {
-
-      const user =
-        interaction.options.getUser("user") ||
-        interaction.user;
-
-      return interaction.reply(
-        `🖼️ **${user.tag}'s Avatar**\n${user.displayAvatarURL({
-          size: 1024,
-          extension: "png",
-        })}`
-      );
-    }
-
-    // ---------- CHANNEL INFO ----------
-
-    if (command === "channelinfo") {
-
-      const channel = interaction.channel;
-
-      return interaction.reply(
-        `📺 **Channel Information**\n\n` +
-        `Name: ${channel.name}\n` +
-        `ID: ${channel.id}\n` +
-        `Type: ${channel.type}\n` +
-        `Created: <t:${Math.floor(channel.createdTimestamp / 1000)}:F>`
-      );
-    }
-
-    // ================= SETTINGS =================
-
-      if (
-        interaction.commandName ===
-        "settings"
-      ) {
-
-        const aiChannel =
-          aiChannels.get(
-            interaction.guild.id
-          );
-
-        const logChannel =
-          logChannels.get(
-            interaction.guild.id
-          );
-
-        return interaction.reply(
-`⚙️ **PRIME AI SETTINGS**
-
-🤖 AI Channel:
-${
-  aiChannel
-    ? `<#${aiChannel}>`
-    : "Not Set"
-}
-
-📋 Log Channel:
-${
-  logChannel
-    ? `<#${logChannel}>`
-    : "Not Set"
-}
-
-🧠 Gemini:
-\`${GEMINI_MODEL}\``
-        );
-      }
-
-      // ================= HELP =================
-
-      if (
-        interaction.commandName ===
-        "help"
-      ) {
-
-        return interaction.reply(
-`🤖 **PRIME DEVELOPMENT AI**
-
-### 🤖 AI
-/ai
-/setaichannel
-/removeaichannel
-
-### 🛡️ MODERATION
-/warn
-/warnings
-/clear
-/timeout
-/untimeout
-/kick
-/ban
-/unban
-
-### 🔒 CHANNEL
-/lock
-/unlock
-/slowmode
-/setlogchannel
-
-### ℹ️ INFORMATION
-/serverinfo
-/userinfo
-/avatar
-/channelinfo
-/settings`
-        );
-      }
-
-    } catch (error) {
-
-      console.error(
-        "❌ COMMAND ERROR:",
-        error
-      );
-
-      const message =
-        "❌ Command execution failed.";
-
-      if (
-        interaction.deferred ||
-        interaction.replied
-      ) {
-
-        await interaction.editReply(
-          message
-        ).catch(() => {});
-
-      } else {
-
-        await interaction.reply({
-          content: message,
-          ephemeral: true
-        }).catch(() => {});
-      }
-    }
-  }
-);
-
-// ================= AUTO AI =================
-
-client.on(
-  "messageCreate",
-  async message => {
-
-    if (message.author.bot) return;
-    if (!message.guild) return;
-
-    const channelId =
-      aiChannels.get(
-        message.guild.id
-      );
-
-    if (!channelId) return;
-
-    if (
-      message.channel.id !== channelId
-    ) {
-      return;
-    }
-
-    // Anti-spam cooldown
-    const key =
-      `${message.guild.id}-${message.author.id}`;
-
-    const now =
-      Date.now();
-
-    const last =
-      cooldowns.get(key) || 0;
-
-    if (
-      now - last < 1500
-    ) {
-      return;
-    }
-
-    cooldowns.set(
-      key,
-      now
-    );
-
-    try {
-
-      await message.channel.sendTyping();
-
-      const answer =
-        await askAI(
-`You are Prime AI for Prime Development Studio.
-
-Reply naturally and helpfully.
-
-Language rules:
-- English → English
-- Hindi → Hindi
-- Hinglish → Hinglish
-
-User message:
-${message.content}`
-        );
-
-      await message.reply({
-        content:
-          answer.slice(0, 4000),
-        allowedMentions: {
-          repliedUser: false
-        }
-      });
-
-    } catch (error) {
-
-      console.error(
-        "❌ AUTO AI ERROR:",
-        error
-      );
-
-      await message.reply(
-        "⚠️ AI temporarily unavailable."
-      ).catch(() => {});
-    }
-  }
-);
-
-// ================= WEB SERVER =================
-
-const app =
-  express();
-
-app.get(
-  "/",
-  (req, res) => {
-
-    res.send(
-      "🚀 Prime Development Studio AI Bot is Online!"
-    );
-  }
-);
-
-app.get(
-  "/health",
-  (req, res) => {
-
-    res.json({
-      status: "online",
-      bot:
-        client.user
-          ? client.user.tag
-          : "starting",
-      model:
-        GEMINI_MODEL
-    });
-  }
-);
-
-const PORT =
-  process.env.PORT || 3000;
-
-app.listen(
-  PORT,
-  () => {
-
-    console.log(
-      `🌐 Web server running on port ${PORT}`
-    );
-  }
-);
-
-// ================= LOGIN =================
-
-client.login(TOKEN)
-  .then(() => {
-
-    console.log(
-      "🚀 Discord login successful"
-    );
-
-  })
-  .catch(error => {
-
     console.error(
-      "❌ Discord login failed:",
+      "❌ Command registration error:",
       error
     );
-  });
+  }
+});
+client.on("interactionCreate",async i=>{
+if(!i.isChatInputCommand())return;
+try{
+const g=i.guild,c=i.commandName;
+
+if(c==="ai"){
+await i.deferReply();
+return i.editReply((await askAI(i.options.getString("question"))).slice(0,1900));
+}
+
+if(c==="setaichannel"){
+aiChannels.set(g.id,i.channel.id);
+return i.reply(`✅ AI Channel: ${i.channel}`);
+}
+
+if(c==="removeaichannel"){
+aiChannels.delete(g.id);
+return i.reply("✅ AI channel removed.");
+}
+
+if(c==="setlogchannel"){
+logChannels.set(g.id,i.channel.id);
+return i.reply(`✅ Log Channel: ${i.channel}`);
+}
+
+if(c==="warn"){
+const u=i.options.getUser("user");
+const r=i.options.getString("reason");
+const k=`${g.id}-${u.id}`;
+const w=warnings.get(k)||[];
+w.push(r);warnings.set(k,w);
+return i.reply(`⚠️ ${u} warned: ${r}`);
+}
+
+if(c==="warnings"){
+const u=i.options.getUser("user");
+const w=warnings.get(`${g.id}-${u.id}`)||[];
+return i.reply(w.length?`⚠️ ${u} warnings:\n${w.map((x,n)=>`${n+1}. ${x}`).join("\n")}`:`✅ No warnings.`);
+}
+
+if(c==="clear"){
+if(!i.memberPermissions.has(PermissionsBitField.Flags.ManageMessages))return i.reply("❌ Permission denied.");
+const n=i.options.getInteger("amount");
+await i.channel.bulkDelete(n,true);
+return i.reply({content:`🧹 Deleted ${n} messages.`,ephemeral:true});
+}
+
+if(c==="timeout"){
+const u=i.options.getUser("user"),m=i.options.getInteger("minutes");
+const x=await g.members.fetch(u.id);
+await x.timeout(m*60000);
+return i.reply(`🔇 ${u} timed out for ${m} minutes.`);
+}
+
+if(c==="untimeout"){
+const u=i.options.getUser("user"),x=await g.members.fetch(u.id);
+await x.timeout(null);
+return i.reply(`🔊 Timeout removed from ${u}.`);
+}
+
+if(c==="kick"){
+const u=i.options.getUser("user");
+await g.members.kick(u.id);
+return i.reply(`👢 ${u.tag} kicked.`);
+}
+
+if(c==="ban"){
+const u=i.options.getUser("user");
+await g.members.ban(u.id);
+return i.reply(`🔨 ${u.tag} banned.`);
+}
+
+if(c==="unban"){
+const id=i.options.getString("userid");
+await g.members.unban(id);
+return i.reply(`✅ ${id} unbanned.`);
+}
+
+if(c==="lock"){
+await i.channel.permissionOverwrites.edit(g.roles.everyone,{SendMessages:false});
+return i.reply("🔒 Channel locked.");
+}
+
+if(c==="unlock"){
+await i.channel.permissionOverwrites.edit(g.roles.everyone,{SendMessages:null});
+return i.reply("🔓 Channel unlocked.");
+}
+
+if(c==="slowmode"){
+const s=i.options.getInteger("seconds");
+await i.channel.setRateLimitPerUser(s);
+return i.reply(`🐌 Slowmode: ${s}s`);
+}
+
+if(c==="serverinfo")
+return i.reply(`📊 **${g.name}**\n👥 Members: ${g.memberCount}\n📁 Channels: ${g.channels.cache.size}`);
+
+if(c==="userinfo"){
+const u=i.options.getUser("user")||i.user;
+return i.reply(`👤 **${u.tag}**\n🆔 ${u.id}\n🤖 Bot: ${u.bot}`);
+}
+
+if(c==="avatar"){
+const u=i.options.getUser("user")||i.user;
+return i.reply(u.displayAvatarURL({size:1024}));
+}
+
+if(c==="channelinfo")
+return i.reply(`📁 **${i.channel.name}**\n🆔 ${i.channel.id}`);
+
+if(c==="settings")
+return i.reply(`⚙️ AI: ${aiChannels.get(g.id)?`<#${aiChannels.get(g.id)}>`:"Not Set"}\n📋 Logs: ${logChannels.get(g.id)?`<#${logChannels.get(g.id)}>`:"Not Set"}\n🧠 ${GEMINI_MODEL}`);
+
+if(c==="help")
+return i.reply("🤖 **Prime AI**\n`/ai` `/setaichannel` `/removeaichannel`\n`/warn` `/warnings` `/clear` `/timeout` `/untimeout`\n`/kick` `/ban` `/unban`\n`/lock` `/unlock` `/slowmode`\n`/serverinfo` `/userinfo` `/avatar` `/channelinfo`\n`/setlogchannel` `/settings` `/help`");
+
+}catch(e){
+console.error(e);
+if(!i.replied&&!i.deferred) i.reply("❌ Error.");
+}
+});
+
+client.on("messageCreate",async m=>{
+if(m.author.bot||!m.guild)return;
+if(aiChannels.get(m.guild.id)!==m.channel.id)return;
+
+const k=`${m.guild.id}-${m.author.id}`,now=Date.now();
+if(now-(cooldowns.get(k)||0)<5000)return;
+cooldowns.set(k,now);
+
+await m.channel.sendTyping();
+
+const a=await askAI(m.content);
+for(let x=0;x<a.length;x+=1900)
+await m.channel.send(a.slice(x,x+1900));
+});
+
+const app=express();
+
+app.get("/",(q,s)=>s.send("🚀 Prime AI Online"));
+
+app.get("/health",(q,s)=>s.json({
+status:"online",
+gemini:GEMINI_MODEL,
+uptime:process.uptime()
+}));
+
+app.listen(process.env.PORT||3000,()=>console.log("🌐 Web server online"));
+
+client.login(TOKEN);
