@@ -40,24 +40,21 @@ const warnings = new Map();
 const cooldown = new Map();
 
 async function askAI(text) {
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      const r = await ai.models.generateContent({
-        model: MODEL,
-        contents: text
-      });
+  try {
+    const r = await ai.models.generateContent({
+      model: MODEL,
+      contents: text
+    });
 
-      return r.text || "⚠️ Empty AI response.";
-    } catch (e) {
-      console.error("Gemini:", e.message);
+    console.log("✅ Gemini response received");
 
-      if (attempt < 3) {
-        await new Promise(x => setTimeout(x, 2000 * attempt));
-      }
-    }
+    return r.text || "⚠️ Empty AI response.";
+
+  } catch (e) {
+    console.error("❌ GEMINI FULL ERROR:", e);
+
+    return `⚠️ Gemini Error:\n${e.message || e}`;
   }
-
-  return "⚠️ Gemini is temporarily unavailable. Please try again.";
 }
 
 const commands = [
