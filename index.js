@@ -15,7 +15,7 @@ const express = require("express");
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GEMINI_KEY = process.env.GEMINI_API_KEY;
-const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const MODEL = process.env.GEMINI_MODEL || "gemini-3.8-flash";
 
 if (!TOKEN || !CLIENT_ID || !GEMINI_KEY) {
   console.error("❌ Missing environment variables!");
