@@ -1,387 +1,452 @@
+require("dotenv").config();
+
 const {
   Client,
   GatewayIntentBits,
+  PermissionsBitField,
   REST,
   Routes,
   SlashCommandBuilder,
-  PermissionFlagsBits,
-  EmbedBuilder,
-  ChannelType
 } = require("discord.js");
 
 const { GoogleGenAI } = require("@google/genai");
 const express = require("express");
 
+// ================= CONFIG =================
+
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GEMINI_KEY = process.env.GEMINI_API_KEY;
 
+// You can change this from Render Environment Variables
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+
 if (!TOKEN || !CLIENT_ID || !GEMINI_KEY) {
-  console.error("❌ Missing environment variables");
+  console.error("❌ Missing environment variables!");
   process.exit(1);
 }
+
+const ai = new GoogleGenAI({
+  apiKey: GEMINI_KEY,
+});
+
+// ================= DISCORD =================
 
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent
-  ]
+    GatewayIntentBits.MessageContent,
+  ],
 });
 
-const ai = new GoogleGenAI({
-  apiKey: GEMINI_KEY
-});
+// ================= DATA =================
 
 const aiChannels = new Map();
 const logChannels = new Map();
 const warnings = new Map();
-const cooldown = new Map();
+const cooldowns = new Map();
+
+// ================= AI =================
+
+async function askAI(prompt) {
+  const maxRetries = 4;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(
+        `🤖 Gemini request | Model: ${GEMINI_MODEL} | Attempt: ${attempt}`
+      );
+
+      const response = await ai.models.generateContent({
+        model: GEMINI_MODEL,
+        contents: prompt,
+      });
+
+      const text = response.text;
+
+      if (text && text.trim()) {
+        console.log("✅ Gemini response received");
+        return text.trim();
+      }
+
+      return "⚠️ AI returned an empty response.";
+
+    } catch (error) {
+      const message = String(error?.message || error);
+
+      console.error(`❌ Gemini attempt ${attempt}: ${message}`);
+
+      const temporary =
+        message.includes("503") ||
+        message.includes("UNAVAILABLE") ||
+        message.includes("429") ||
+        message.includes("RESOURCE_EXHAUSTED") ||
+        message.includes("high demand");
+
+      if (!temporary || attempt === maxRetries) {
+        return `⚠️ AI error: ${message.slice(0, 500)}`;
+      }
+
+      // Exponential retry: 2s, 4s, 8s...
+      const wait = 2000 * Math.pow(2, attempt - 1);
+
+      console.log(`⏳ Gemini busy. Retrying in ${wait / 1000}s...`);
+
+      await new Promise(resolve => setTimeout(resolve, wait));
+    }
+  }
+
+  return "⚠️ Gemini is temporarily unavailable. Please try again.";
+}
+
+// ================= LOGGING =================
+
+async function sendLog(guild, text) {
+  const channelId = logChannels.get(guild.id);
+
+  if (!channelId) return;
+
+  const channel = guild.channels.cache.get(channelId);
+
+  if (!channel) return;
+
+  try {
+    await channel.send(text);
+  } catch {}
+}
+
+// ================= COMMANDS =================
 
 const commands = [
+
   new SlashCommandBuilder()
     .setName("ai")
     .setDescription("Ask Prime AI")
-    .addStringOption(o =>
-      o.setName("question")
-       .setDescription("Ask anything")
-       .setRequired(true)
+    .addStringOption(option =>
+      option
+        .setName("question")
+        .setDescription("Your question")
+        .setRequired(true)
     ),
 
   new SlashCommandBuilder()
     .setName("setaichannel")
-    .setDescription("Set automatic AI channel")
-    .addChannelOption(o =>
-      o.setName("channel")
-       .setDescription("Select AI channel")
-       .addChannelTypes(ChannelType.GuildText)
-       .setRequired(true)
-    )
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageGuild.toString()
-    ),
+    .setDescription("Set the AI channel"),
 
   new SlashCommandBuilder()
     .setName("removeaichannel")
-    .setDescription("Remove automatic AI channel")
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageGuild.toString()
-    ),
+    .setDescription("Remove the AI channel"),
+
+  new SlashCommandBuilder()
+    .setName("setlogchannel")
+    .setDescription("Set the moderation log channel"),
 
   new SlashCommandBuilder()
     .setName("warn")
     .setDescription("Warn a member")
-    .addUserOption(o =>
-      o.setName("user")
-       .setDescription("Member")
-       .setRequired(true)
+    .addUserOption(option =>
+      option
+        .setName("user")
+        .setDescription("Member")
+        .setRequired(true)
     )
-    .addStringOption(o =>
-      o.setName("reason")
-       .setDescription("Reason")
-       .setRequired(true)
-    )
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ModerateMembers.toString()
+    .addStringOption(option =>
+      option
+        .setName("reason")
+        .setDescription("Reason")
+        .setRequired(true)
     ),
 
   new SlashCommandBuilder()
     .setName("warnings")
-    .setDescription("View warnings")
-    .addUserOption(o =>
-      o.setName("user")
-       .setDescription("Member")
-       .setRequired(true)
-    )
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ModerateMembers.toString()
+    .setDescription("View member warnings")
+    .addUserOption(option =>
+      option
+        .setName("user")
+        .setDescription("Member")
+        .setRequired(true)
     ),
 
   new SlashCommandBuilder()
     .setName("clear")
     .setDescription("Delete messages")
-    .addIntegerOption(o =>
-      o.setName("amount")
-       .setDescription("1-100")
-       .setMinValue(1)
-       .setMaxValue(100)
-       .setRequired(true)
-    )
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageMessages.toString()
+    .addIntegerOption(option =>
+      option
+        .setName("amount")
+        .setDescription("1-100")
+        .setMinValue(1)
+        .setMaxValue(100)
+        .setRequired(true)
     ),
 
   new SlashCommandBuilder()
     .setName("timeout")
-    .setDescription("Timeout member")
-    .addUserOption(o =>
-      o.setName("user")
-       .setDescription("Member")
-       .setRequired(true)
+    .setDescription("Timeout a member")
+    .addUserOption(option =>
+      option
+        .setName("user")
+        .setDescription("Member")
+        .setRequired(true)
     )
-    .addIntegerOption(o =>
-      o.setName("minutes")
-       .setDescription("Minutes")
-       .setMinValue(1)
-       .setMaxValue(40320)
-       .setRequired(true)
-    )
-    .addStringOption(o =>
-      o.setName("reason")
-       .setDescription("Reason")
-    )
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ModerateMembers.toString()
+    .addIntegerOption(option =>
+      option
+        .setName("minutes")
+        .setDescription("Timeout minutes")
+        .setMinValue(1)
+        .setMaxValue(10080)
+        .setRequired(true)
     ),
 
   new SlashCommandBuilder()
     .setName("untimeout")
     .setDescription("Remove timeout")
-    .addUserOption(o =>
-      o.setName("user")
-       .setDescription("Member")
-       .setRequired(true)
-    )
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ModerateMembers.toString()
+    .addUserOption(option =>
+      option
+        .setName("user")
+        .setDescription("Member")
+        .setRequired(true)
     ),
 
   new SlashCommandBuilder()
     .setName("kick")
-    .setDescription("Kick member")
-    .addUserOption(o =>
-      o.setName("user")
-       .setDescription("Member")
-       .setRequired(true)
+    .setDescription("Kick a member")
+    .addUserOption(option =>
+      option
+        .setName("user")
+        .setDescription("Member")
+        .setRequired(true)
     )
-    .addStringOption(o =>
-      o.setName("reason")
-       .setDescription("Reason")
-    )
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.KickMembers.toString()
+    .addStringOption(option =>
+      option
+        .setName("reason")
+        .setDescription("Reason")
     ),
 
   new SlashCommandBuilder()
     .setName("ban")
-    .setDescription("Ban member")
-    .addUserOption(o =>
-      o.setName("user")
-       .setDescription("Member")
-       .setRequired(true)
+    .setDescription("Ban a member")
+    .addUserOption(option =>
+      option
+        .setName("user")
+        .setDescription("Member")
+        .setRequired(true)
     )
-    .addStringOption(o =>
-      o.setName("reason")
-       .setDescription("Reason")
-    )
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.BanMembers.toString()
+    .addStringOption(option =>
+      option
+        .setName("reason")
+        .setDescription("Reason")
     ),
 
   new SlashCommandBuilder()
     .setName("unban")
-    .setDescription("Unban user")
-    .addStringOption(o =>
-      o.setName("userid")
-       .setDescription("User ID")
-       .setRequired(true)
-    )
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.BanMembers.toString()
+    .setDescription("Unban a user")
+    .addStringOption(option =>
+      option
+        .setName("userid")
+        .setDescription("User ID")
+        .setRequired(true)
     ),
 
   new SlashCommandBuilder()
     .setName("lock")
-    .setDescription("Lock channel")
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageChannels.toString()
-    ),
+    .setDescription("Lock current channel"),
 
   new SlashCommandBuilder()
     .setName("unlock")
-    .setDescription("Unlock channel")
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageChannels.toString()
-    ),
+    .setDescription("Unlock current channel"),
 
   new SlashCommandBuilder()
     .setName("slowmode")
-    .setDescription("Set slowmode")
-    .addIntegerOption(o =>
-      o.setName("seconds")
-       .setDescription("0-21600 seconds")
-       .setMinValue(0)
-       .setMaxValue(21600)
-       .setRequired(true)
-    )
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageChannels.toString()
-    ),
-
-  new SlashCommandBuilder()
-    .setName("setlogchannel")
-    .setDescription("Set log channel")
-    .addChannelOption(o =>
-      o.setName("channel")
-       .setDescription("Log channel")
-       .addChannelTypes(ChannelType.GuildText)
-       .setRequired(true)
-    )
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageGuild.toString()
+    .setDescription("Set channel slowmode")
+    .addIntegerOption(option =>
+      option
+        .setName("seconds")
+        .setDescription("0-21600 seconds")
+        .setMinValue(0)
+        .setMaxValue(21600)
+        .setRequired(true)
     ),
 
   new SlashCommandBuilder()
     .setName("serverinfo")
-    .setDescription("Server information"),
+    .setDescription("Show server information"),
 
   new SlashCommandBuilder()
     .setName("userinfo")
-    .setDescription("User information")
-    .addUserOption(o =>
-      o.setName("user")
-       .setDescription("User")
+    .setDescription("Show user information")
+    .addUserOption(option =>
+      option
+        .setName("user")
+        .setDescription("User")
+        .setRequired(false)
     ),
 
   new SlashCommandBuilder()
     .setName("avatar")
     .setDescription("Show avatar")
-    .addUserOption(o =>
-      o.setName("user")
-       .setDescription("User")
+    .addUserOption(option =>
+      option
+        .setName("user")
+        .setDescription("User")
+        .setRequired(false)
     ),
 
   new SlashCommandBuilder()
+    .setName("channelinfo")
+    .setDescription("Show channel information"),
+
+  new SlashCommandBuilder()
     .setName("settings")
-    .setDescription("Bot settings"),
+    .setDescription("Show bot settings"),
 
   new SlashCommandBuilder()
     .setName("help")
-    .setDescription("Show commands")
-];
+    .setDescription("Show bot commands"),
 
-async function askAI(prompt) {
-  try {
-    console.log("🤖 Gemini request started");
+].map(command => command.toJSON());
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.8-flash",
-      contents: prompt
-    });
-
-    console.log("✅ Gemini response received");
-
-    return response.text || "AI returned an empty response.";
-  } catch (error) {
-    console.error("❌ GEMINI ERROR:", error);
-    return "❌ Gemini request failed. Check Render logs.";
-  }
-}
-
-async function sendLog(guild, text) {
-  const channelId = logChannels.get(guild.id);
-  if (!channelId) return;
-
-  const channel = guild.channels.cache.get(channelId);
-  if (!channel) return;
-
-  channel.send({
-    embeds: [
-      new EmbedBuilder()
-        .setColor(0x5865f2)
-        .setDescription(text)
-        .setTimestamp()
-    ]
-  }).catch(() => {});
-}
+// ================= READY =================
 
 client.once("ready", async () => {
-  console.log(`✅ Logged in as ${client.user.tag}`);
 
-  client.user.setPresence({
-    activities: [
-      {
-        name: "Prime Development Studio",
-        type: 3
-      }
-    ],
-    status: "online"
+  console.log("=================================");
+  console.log(`✅ Logged in as ${client.user.tag}`);
+  console.log(`🆔 Bot ID: ${client.user.id}`);
+  console.log(`🤖 Gemini Model: ${GEMINI_MODEL}`);
+  console.log("=================================");
+
+  client.user.setActivity("Prime Development Studio", {
+    type: 3,
   });
 
-  const rest = new REST({
-    version: "10"
-  }).setToken(TOKEN);
-
   try {
+
+    const rest = new REST({ version: "10" }).setToken(TOKEN);
+
     await rest.put(
       Routes.applicationCommands(CLIENT_ID),
       {
-        body: commands.map(c => c.toJSON())
+        body: commands,
       }
     );
 
     console.log("✅ Slash commands registered");
+
   } catch (error) {
-    console.error("❌ COMMAND ERROR:", error);
+    console.error("❌ Command registration error:", error);
   }
 });
 
+// ================= INTERACTIONS =================
+
 client.on("interactionCreate", async interaction => {
+
   if (!interaction.isChatInputCommand()) return;
 
-  try {
-    const cmd = interaction.commandName;
+  const command = interaction.commandName;
 
-    if (cmd === "ai") {
-      await interaction.deferReply();
+  try {
+
+    // ---------- AI ----------
+
+    if (command === "ai") {
 
       const question =
         interaction.options.getString("question");
 
-      const answer = await askAI(
-        `You are Prime Development Studio AI.
-Be helpful, friendly and concise.
+      await interaction.deferReply();
 
-User:
+      const answer = await askAI(
+        `You are Prime AI, the official AI assistant of Prime Development Studio.
+
+Be helpful, friendly and concise.
+Answer in the same language/style as the user.
+If the user uses Hinglish, reply in Hinglish.
+
+User question:
 ${question}`
       );
 
-      return interaction.editReply({
-        embeds: [
-          new EmbedBuilder()
-            .setColor(0x5865f2)
-            .setTitle("🤖 Prime AI")
-            .setDescription(answer.slice(0, 4000))
-            .setFooter({
-              text: "Prime Development Studio"
-            })
-        ]
-      });
+      return interaction.editReply(answer.slice(0, 4000));
     }
 
-    if (cmd === "setaichannel") {
-      const channel =
-        interaction.options.getChannel("channel");
+    // ---------- SET AI CHANNEL ----------
+
+    if (command === "setaichannel") {
+
+      if (
+        !interaction.memberPermissions.has(
+          PermissionsBitField.Flags.ManageGuild
+        )
+      ) {
+        return interaction.reply({
+          content: "❌ You need Manage Server permission.",
+          ephemeral: true,
+        });
+      }
 
       aiChannels.set(
         interaction.guild.id,
-        channel.id
+        interaction.channel.id
       );
 
       return interaction.reply(
-        `✅ Automatic AI channel set to ${channel}`
+        `✅ AI channel set to <#${interaction.channel.id}>`
       );
     }
 
-    if (cmd === "removeaichannel") {
+    // ---------- REMOVE AI CHANNEL ----------
+
+    if (command === "removeaichannel") {
+
       aiChannels.delete(interaction.guild.id);
 
       return interaction.reply(
-        "✅ Automatic AI channel removed."
+        "✅ AI channel removed."
       );
     }
 
-    if (cmd === "warn") {
+    // ---------- LOG CHANNEL ----------
+
+    if (command === "setlogchannel") {
+
+      if (
+        !interaction.memberPermissions.has(
+          PermissionsBitField.Flags.ManageGuild
+        )
+      ) {
+        return interaction.reply({
+          content: "❌ You need Manage Server permission.",
+          ephemeral: true,
+        });
+      }
+
+      logChannels.set(
+        interaction.guild.id,
+        interaction.channel.id
+      );
+
+      return interaction.reply(
+        `✅ Log channel set to <#${interaction.channel.id}>`
+      );
+    }
+
+    // ---------- WARN ----------
+
+    if (command === "warn") {
+
+      if (
+        !interaction.memberPermissions.has(
+          PermissionsBitField.Flags.ModerateMembers
+        )
+      ) {
+        return interaction.reply({
+          content: "❌ You need Moderate Members permission.",
+          ephemeral: true,
+        });
+      }
+
       const user =
         interaction.options.getUser("user");
 
@@ -389,17 +454,18 @@ ${question}`
         interaction.options.getString("reason");
 
       const key =
-        `${interaction.guild.id}:${user.id}`;
+        `${interaction.guild.id}-${user.id}`;
 
-      const list =
+      const current =
         warnings.get(key) || [];
 
-      list.push({
+      current.push({
         reason,
-        moderator: interaction.user.tag
+        moderator: interaction.user.id,
+        time: new Date().toISOString(),
       });
 
-      warnings.set(key, list);
+      warnings.set(key, current);
 
       await sendLog(
         interaction.guild,
@@ -407,16 +473,19 @@ ${question}`
       );
 
       return interaction.reply(
-        `⚠️ ${user} warned.\nReason: ${reason}\nTotal warnings: ${list.length}`
+        `⚠️ ${user} has been warned.\nReason: ${reason}`
       );
     }
 
-    if (cmd === "warnings") {
+    // ---------- WARNINGS ----------
+
+    if (command === "warnings") {
+
       const user =
         interaction.options.getUser("user");
 
       const key =
-        `${interaction.guild.id}:${user.id}`;
+        `${interaction.guild.id}-${user.id}`;
 
       const list =
         warnings.get(key) || [];
@@ -428,61 +497,78 @@ ${question}`
       }
 
       const text = list
-        .map((w, i) =>
-          `**${i + 1}.** ${w.reason} — ${w.moderator}`
+        .map(
+          (w, i) =>
+            `**${i + 1}.** ${w.reason}`
         )
         .join("\n");
 
-      return interaction.reply({
-        embeds: [
-          new EmbedBuilder()
-            .setColor(0xfee75c)
-            .setTitle(`⚠️ Warnings — ${user.tag}`)
-            .setDescription(text.slice(0, 4000))
-        ]
-      });
+      return interaction.reply(
+        `⚠️ Warnings for ${user}:\n${text}`
+      );
     }
 
-    if (cmd === "clear") {
+    // ---------- CLEAR ----------
+
+    if (command === "clear") {
+
+      if (
+        !interaction.memberPermissions.has(
+          PermissionsBitField.Flags.ManageMessages
+        )
+      ) {
+        return interaction.reply({
+          content: "❌ You need Manage Messages permission.",
+          ephemeral: true,
+        });
+      }
+
       const amount =
         interaction.options.getInteger("amount");
 
-      const deleted =
-        await interaction.channel.bulkDelete(
-          amount,
-          true
-        );
+      await interaction.channel.bulkDelete(
+        amount,
+        true
+      );
 
       return interaction.reply({
-        content:
-          `🧹 Deleted ${deleted.size} messages.`,
-        ephemeral: true
+        content: `🧹 Deleted ${amount} messages.`,
+        ephemeral: true,
       });
     }
 
-    if (cmd === "timeout") {
+    // ---------- TIMEOUT ----------
+
+    if (command === "timeout") {
+
+      if (
+        !interaction.memberPermissions.has(
+          PermissionsBitField.Flags.ModerateMembers
+        )
+      ) {
+        return interaction.reply({
+          content: "❌ You need Moderate Members permission.",
+          ephemeral: true,
+        });
+      }
+
       const user =
         interaction.options.getUser("user");
 
       const minutes =
         interaction.options.getInteger("minutes");
 
-      const reason =
-        interaction.options.getString("reason") ||
-        "No reason";
-
       const member =
         await interaction.guild.members.fetch(user.id);
 
-      if (!member.moderatable) {
-        return interaction.reply(
-          "❌ I cannot timeout this member."
-        );
-      }
-
       await member.timeout(
-        minutes * 60000,
-        reason
+        minutes * 60 * 1000,
+        `Timeout by ${interaction.user.tag}`
+      );
+
+      await sendLog(
+        interaction.guild,
+        `🔇 ${user} was timed out for ${minutes} minutes by ${interaction.user}.`
       );
 
       return interaction.reply(
@@ -490,18 +576,26 @@ ${question}`
       );
     }
 
-    if (cmd === "untimeout") {
+    // ---------- UNTIMEOUT ----------
+
+    if (command === "untimeout") {
+
+      if (
+        !interaction.memberPermissions.has(
+          PermissionsBitField.Flags.ModerateMembers
+        )
+      ) {
+        return interaction.reply({
+          content: "❌ You need Moderate Members permission.",
+          ephemeral: true,
+        });
+      }
+
       const user =
         interaction.options.getUser("user");
 
       const member =
         await interaction.guild.members.fetch(user.id);
-
-      if (!member.moderatable) {
-        return interaction.reply(
-          "❌ I cannot modify this member."
-        );
-      }
 
       await member.timeout(null);
 
@@ -510,72 +604,126 @@ ${question}`
       );
     }
 
-    if (cmd === "kick") {
+    // ---------- KICK ----------
+
+    if (command === "kick") {
+
+      if (
+        !interaction.memberPermissions.has(
+          PermissionsBitField.Flags.KickMembers
+        )
+      ) {
+        return interaction.reply({
+          content: "❌ You need Kick Members permission.",
+          ephemeral: true,
+        });
+      }
+
       const user =
         interaction.options.getUser("user");
 
-      const member =
-        await interaction.guild.members.fetch(user.id);
-
-      if (!member.kickable) {
-        return interaction.reply(
-          "❌ I cannot kick this member."
-        );
-      }
-
       const reason =
         interaction.options.getString("reason") ||
-        "No reason";
+        "No reason provided";
+
+      const member =
+        await interaction.guild.members.fetch(user.id);
 
       await member.kick(reason);
 
+      await sendLog(
+        interaction.guild,
+        `👢 ${user.tag} was kicked by ${interaction.user.tag}\nReason: ${reason}`
+      );
+
       return interaction.reply(
-        `👢 ${user.tag} was kicked.`
+        `👢 ${user.tag} has been kicked.`
       );
     }
 
-    if (cmd === "ban") {
+    // ---------- BAN ----------
+
+    if (command === "ban") {
+
+      if (
+        !interaction.memberPermissions.has(
+          PermissionsBitField.Flags.BanMembers
+        )
+      ) {
+        return interaction.reply({
+          content: "❌ You need Ban Members permission.",
+          ephemeral: true,
+        });
+      }
+
       const user =
         interaction.options.getUser("user");
+
+      const reason =
+        interaction.options.getString("reason") ||
+        "No reason provided";
 
       const member =
         await interaction.guild.members.fetch(user.id);
 
-      if (!member.bannable) {
-        return interaction.reply(
-          "❌ I cannot ban this member."
-        );
-      }
-
-      const reason =
-        interaction.options.getString("reason") ||
-        "No reason";
-
       await member.ban({
-        reason
+        reason,
       });
 
+      await sendLog(
+        interaction.guild,
+        `🔨 ${user.tag} was banned by ${interaction.user.tag}\nReason: ${reason}`
+      );
+
       return interaction.reply(
-        `🔨 ${user.tag} was banned.`
+        `🔨 ${user.tag} has been banned.`
       );
     }
 
-    if (cmd === "unban") {
-      const id =
+    // ---------- UNBAN ----------
+
+    if (command === "unban") {
+
+      if (
+        !interaction.memberPermissions.has(
+          PermissionsBitField.Flags.BanMembers
+        )
+      ) {
+        return interaction.reply({
+          content: "❌ You need Ban Members permission.",
+          ephemeral: true,
+        });
+      }
+
+      const userId =
         interaction.options.getString("userid");
 
-      await interaction.guild.members.unban(id);
+      await interaction.guild.members.unban(userId);
 
       return interaction.reply(
-        `✅ User ${id} unbanned.`
+        `✅ User \`${userId}\` has been unbanned.`
       );
     }
 
-    if (cmd === "lock") {
+    // ---------- LOCK ----------
+
+    if (command === "lock") {
+
+      if (
+        !interaction.memberPermissions.has(
+          PermissionsBitField.Flags.ManageChannels
+        )
+      ) {
+        return interaction.reply({
+          content: "❌ You need Manage Channels permission.",
+          ephemeral: true,
+        });
+      }
+
       await interaction.channel.permissionOverwrites.edit(
         interaction.guild.roles.everyone,
         {
-          SendMessages: false
+          SendMessages: false,
         }
       );
 
@@ -584,11 +732,25 @@ ${question}`
       );
     }
 
-    if (cmd === "unlock") {
+    // ---------- UNLOCK ----------
+
+    if (command === "unlock") {
+
+      if (
+        !interaction.memberPermissions.has(
+          PermissionsBitField.Flags.ManageChannels
+        )
+      ) {
+        return interaction.reply({
+          content: "❌ You need Manage Channels permission.",
+          ephemeral: true,
+        });
+      }
+
       await interaction.channel.permissionOverwrites.edit(
         interaction.guild.roles.everyone,
         {
-          SendMessages: null
+          SendMessages: null,
         }
       );
 
@@ -597,7 +759,21 @@ ${question}`
       );
     }
 
-    if (cmd === "slowmode") {
+    // ---------- SLOWMODE ----------
+
+    if (command === "slowmode") {
+
+      if (
+        !interaction.memberPermissions.has(
+          PermissionsBitField.Flags.ManageChannels
+        )
+      ) {
+        return interaction.reply({
+          content: "❌ You need Manage Channels permission.",
+          ephemeral: true,
+        });
+      }
+
       const seconds =
         interaction.options.getInteger("seconds");
 
@@ -610,257 +786,93 @@ ${question}`
       );
     }
 
-    if (cmd === "setlogchannel") {
-      const channel =
-        interaction.options.getChannel("channel");
+    // ---------- SERVER INFO ----------
 
-      logChannels.set(
-        interaction.guild.id,
-        channel.id
-      );
+    if (command === "serverinfo") {
+
+      const guild = interaction.guild;
 
       return interaction.reply(
-        `📋 Log channel set to ${channel}`
+        `🏠 **${guild.name}**\n\n` +
+        `👥 Members: ${guild.memberCount}\n` +
+        `💬 Channels: ${guild.channels.cache.size}\n` +
+        `🆔 ID: ${guild.id}\n` +
+        `👑 Owner: <@${guild.ownerId}>`
       );
     }
 
-    if (cmd === "serverinfo") {
-      const guild =
-        interaction.guild;
+    // ---------- USER INFO ----------
 
-      return interaction.reply({
-        embeds: [
-          new EmbedBuilder()
-            .setColor(0x5865f2)
-            .setTitle(`📊 ${guild.name}`)
-            .addFields(
-              {
-                name: "👥 Members",
-                value: `${guild.memberCount}`,
-                inline: true
-              },
-              {
-                name: "💬 Channels",
-                value:
-                  `${guild.channels.cache.size}`,
-                inline: true
-              },
-              {
-                name: "🎭 Roles",
-                value:
-                  `${guild.roles.cache.size}`,
-                inline: true
-              }
-            )
-        ]
-      });
-    }
+    if (command === "userinfo") {
 
-    if (cmd === "userinfo") {
       const user =
         interaction.options.getUser("user") ||
         interaction.user;
 
-      return interaction.reply({
-        embeds: [
-          new EmbedBuilder()
-            .setColor(0x5865f2)
-            .setTitle(`👤 ${user.tag}`)
-            .setThumbnail(
-              user.displayAvatarURL()
-            )
-            .addFields({
-              name: "🆔 User ID",
-              value: user.id
-            })
-        ]
-      });
+      const member =
+        await interaction.guild.members.fetch(user.id);
+
+      return interaction.reply(
+        `👤 **User Information**\n\n` +
+        `Name: ${user.tag}\n` +
+        `ID: ${user.id}\n` +
+        `Joined: <t:${Math.floor(member.joinedTimestamp / 1000)}:F>\n` +
+        `Created: <t:${Math.floor(user.createdTimestamp / 1000)}:F>`
+      );
     }
 
-    if (cmd === "avatar") {
+    // ---------- AVATAR ----------
+
+    if (command === "avatar") {
+
       const user =
         interaction.options.getUser("user") ||
         interaction.user;
 
       return interaction.reply(
-        user.displayAvatarURL({
-          size: 1024
-        })
+        `🖼️ **${user.tag}'s Avatar**\n${user.displayAvatarURL({
+          size: 1024,
+          extension: "png",
+        })}`
       );
     }
 
-    if (cmd === "settings") {
-      return interaction.reply({
-        embeds: [
-          new EmbedBuilder()
-            .setColor(0x5865f2)
-            .setTitle("⚙️ Prime AI Settings")
-            .addFields(
-              {
-                name: "🤖 AI Channel",
-                value:
-                  aiChannels.has(interaction.guild.id)
-                    ? `<#${aiChannels.get(interaction.guild.id)}>`
-                    : "Not set"
-              },
-              {
-                name: "📋 Log Channel",
-                value:
-                  logChannels.has(interaction.guild.id)
-                    ? `<#${logChannels.get(interaction.guild.id)}>`
-                    : "Not set"
-              }
-            )
-        ]
-      });
-    }
+    // ---------- CHANNEL INFO ----------
 
-    if (cmd === "help") {
-      return interaction.reply({
-        embeds: [
-          new EmbedBuilder()
-            .setColor(0x5865f2)
-            .setTitle(
-              "🤖 Prime Development Studio AI"
-            )
-            .setDescription(
-              "**🤖 AI**\n" +
-              "`/ai` `/setaichannel` `/removeaichannel`\n\n" +
+    if (command === "channelinfo") {
 
-              "**🛡️ Moderation**\n" +
-              "`/warn` `/warnings` `/clear`\n" +
-              "`/timeout` `/untimeout` `/kick`\n" +
-              "`/ban` `/unban`\n\n" +
+      const channel = interaction.channel;
 
-              "**🔒 Channel**\n" +
-              "`/lock` `/unlock` `/slowmode`\n" +
-              "`/setlogchannel`\n\n" +
-
-              "**📊 Information**\n" +
-              "`/serverinfo` `/userinfo` `/avatar`\n\n" +
-
-              "**⚙️ System**\n" +
-              "`/settings` `/help`"
-            )
-            .setFooter({
-              text: "Prime Development Studio"
-            })
-        ]
-      });
-    }
-
-  } catch (error) {
-    console.error(
-      "❌ INTERACTION ERROR:",
-      error
-    );
-
-    if (
-      interaction.replied ||
-      interaction.deferred
-    ) {
-      return interaction.editReply(
-        "❌ Something went wrong."
+      return interaction.reply(
+        `📺 **Channel Information**\n\n` +
+        `Name: ${channel.name}\n` +
+        `ID: ${channel.id}\n` +
+        `Type: ${channel.type}\n` +
+        `Created: <t:${Math.floor(channel.createdTimestamp / 1000)}:F>`
       );
     }
 
-    return interaction.reply({
-      content: "❌ Something went wrong.",
-      ephemeral: true
-    });
-  }
-});
+    // ---------- SETTINGS ----------
 
-client.on("messageCreate", async message => {
-  if (
-    message.author.bot ||
-    !message.guild
-  ) return;
+    if (command === "settings") {
 
-  const channelId =
-    aiChannels.get(message.guild.id);
+      const aiChannel =
+        aiChannels.get(interaction.guild.id);
 
-  if (
-    !channelId ||
-    message.channel.id !== channelId
-  ) return;
+      const logChannel =
+        logChannels.get(interaction.guild.id);
 
-  console.log(
-    `💬 AI message from ${message.author.tag}`
-  );
-
-  const last =
-    cooldown.get(message.author.id) || 0;
-
-  if (
-    Date.now() - last < 2000
-  ) return;
-
-  cooldown.set(
-    message.author.id,
-    Date.now()
-  );
-
-  const text =
-    message.content.trim();
-
-  if (!text) return;
-
-  if (text.length > 1500) {
-    return message.reply(
-      "❌ Message is too long. Keep it under 1500 characters."
-    );
-  }
-
-  try {
-    await message.channel.sendTyping();
-
-    const answer =
-      await askAI(
-        `You are Prime Development Studio AI,
-a friendly Discord assistant.
-
-User message:
-${text}`
-      );
-
-    await message.reply({
-      embeds: [
-        new EmbedBuilder()
-          .setColor(0x5865f2)
-          .setTitle("🤖 Prime AI")
-          .setDescription(
-            answer.slice(0, 4000)
-          )
-          .setFooter({
-            text: "Prime Development Studio"
-          })
-      ]
-    });
-
-  } catch (error) {
-    console.error(
-      "❌ MESSAGE AI ERROR:",
-      error
-    );
-  }
-});
-
-const app = express();
-
-app.get("/", (req, res) => {
-  res.send(
-    "Prime Development Studio AI is ONLINE!"
-  );
-});
-
-app.listen(
-  process.env.PORT || 3000,
-  () => {
-    console.log(
-      "🌐 Web server started"
-    );
-  }
-);
-
-client.login(TOKEN);
+      return interaction.reply(
+        `⚙️ **Prime AI Settings**\n\n` +
+        `🤖 AI Channel: ${
+          aiChannel
+            ? `<#${aiChannel}>`
+            : "Not configured"
+        }\n` +
+        `📋 Log Channel: ${
+          logChannel
+            ? `<#${logChannel}>`
+            : "Not configured"
+        }\n` +
+        `🧠 Gemini Model: \`${GEMINI_MODEL}\``
+  
