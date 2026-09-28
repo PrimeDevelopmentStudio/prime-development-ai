@@ -15,6 +15,7 @@ const {
 } = require("discord.js");
 
 const { GoogleGenAI } = require("@google/genai");
+const mongoose = require("mongoose");
 const express = require("express");
 
 // ===============================
@@ -24,6 +25,7 @@ const express = require("express");
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const MONGODB_URI = process.env.MONGODB_URI;
 
 const MODEL = "gemini-3.8-flash";
 
@@ -46,6 +48,68 @@ if (!GEMINI_API_KEY) {
   process.exit(1);
 }
 
+if (!MONGODB_URI) {
+  console.error("❌ MONGODB_URI missing");
+  process.exit(1);
+}
+
+// ===============================
+// MONGODB
+// ===============================
+
+const userSchema = new mongoose.Schema(
+  {
+    guildId: {
+      type: String,
+      required: true
+    },
+
+    userId: {
+      type: String,
+      required: true
+    },
+
+    coins: {
+      type: Number,
+      default: 0
+    },
+
+    lastDaily: {
+      type: Number,
+      default: 0
+    },
+
+    xp: {
+      type: Number,
+      default: 0
+    },
+
+    level: {
+      type: Number,
+      default: 1
+    }
+  },
+  {
+    timestamps: true
+  }
+);
+
+userSchema.index(
+  {
+    guildId: 1,
+    userId: 1
+  },
+  {
+    unique: true
+  }
+);
+
+const UserData =
+  mongoose.model(
+    "UserData",
+    userSchema
+  );
+
 // ===============================
 // GEMINI
 // ===============================
@@ -53,6 +117,24 @@ if (!GEMINI_API_KEY) {
 const ai = new GoogleGenAI({
   apiKey: GEMINI_API_KEY
 });
+
+async function askAI(question) {
+  try {
+    const response =
+      await ai.models.generateContent({
+        model: MODEL,
+        contents: question
+      });
+
+    return response.text || "No response.";
+
+  } catch (error) {
+    console.error("GEMINI ERROR:");
+    console.error(error);
+
+    return "❌ Gemini AI error. Check Render Logs.";
+  }
+}
 
 // ===============================
 // DISCORD
@@ -72,92 +154,57 @@ const client = new Client({
 // ===============================
 
 const aiChannels = new Map();
-
 const welcomeChannels = new Map();
-
 const antiLinkServers = new Set();
-
-const levels = new Map();
-
-const economy = new Map();
-
 const giveaways = new Map();
 
 // ===============================
-// GEMINI FUNCTION
+// DATABASE USER
 // ===============================
 
-async function askAI(question) {
-
-  try {
-
-    const response =
-      await ai.models.generateContent({
-        model: MODEL,
-        contents: question
-      });
-
-    return response.text || "No response.";
-
-  } catch (error) {
-
-    console.error("GEMINI ERROR:");
-    console.error(error);
-
-    return "❌ Gemini AI error. Check Render Logs.";
-
-  }
-
+async function getUserData(
+  guildId,
+  userId
+) {
+  return await UserData.findOneAndUpdate(
+    {
+      guildId,
+      userId
+    },
+    {
+      $setOnInsert: {
+        guildId,
+        userId,
+        coins: 0,
+        lastDaily: 0,
+        xp: 0,
+        level: 1
+      }
+    },
+    {
+      new: true,
+      upsert: true,
+      setDefaultsOnInsert: true
+    }
+  );
 }
 
 // ===============================
-// LEVEL SYSTEM
+// LEVEL
 // ===============================
-
-function getLevelData(guildId, userId) {
-
-  const key =
-    `${guildId}-${userId}`;
-
-  if (!levels.has(key)) {
-
-    levels.set(key, {
-      xp: 0,
-      level: 1
-    });
-
-  }
-
-  return levels.get(key);
-
-}
 
 function xpRequired(level) {
-
   return level * 100;
-
 }
 
 // ===============================
-// ECONOMY SYSTEM
+// ADMIN CHECK
 // ===============================
 
-function getEconomy(guildId, userId) {
-
-  const key =
-    `${guildId}-${userId}`;
-
-  if (!economy.has(key)) {
-
-    economy.set(key, {
-      coins: 0,
-      lastDaily: 0
-    });
-
-  }
-
-  return economy.get(key);
-
+function isAdmin(interaction) {
+  return interaction.memberPermissions?.has(
+    PermissionFlagsBits.Administrator
+  );
 }
 
 // ===============================
@@ -324,6 +371,157 @@ const commands = [
     ),
 
   // =============================
+  // ADMIN CASH
+  // =============================
+
+  new SlashCommandBuilder()
+    .setName("addcash")
+    .setDescription("Admin: add cash")
+    .addUserOption(option =>
+      option
+        .setName("user")
+        .setDescription("Target user")
+        .setRequired(true)
+    )
+    .addIntegerOption(option =>
+      option
+        .setName("amount")
+        .setDescription("Cash amount")
+        .setMinValue(1)
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("removecash")
+    .setDescription("Admin: remove cash")
+    .addUserOption(option =>
+      option
+        .setName("user")
+        .setDescription("Target user")
+        .setRequired(true)
+    )
+    .addIntegerOption(option =>
+      option
+        .setName("amount")
+        .setDescription("Cash amount")
+        .setMinValue(1)
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("setcash")
+    .setDescription("Admin: set cash")
+    .addUserOption(option =>
+      option
+        .setName("user")
+        .setDescription("Target user")
+        .setRequired(true)
+    )
+    .addIntegerOption(option =>
+      option
+        .setName("amount")
+        .setDescription("Cash amount")
+        .setMinValue(0)
+        .setRequired(true)
+    ),
+
+  // =============================
+  // ADMIN XP
+  // =============================
+
+  new SlashCommandBuilder()
+    .setName("addxp")
+    .setDescription("Admin: add XP")
+    .addUserOption(option =>
+      option
+        .setName("user")
+        .setDescription("Target user")
+        .setRequired(true)
+    )
+    .addIntegerOption(option =>
+      option
+        .setName("amount")
+        .setDescription("XP amount")
+        .setMinValue(1)
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("removexp")
+    .setDescription("Admin: remove XP")
+    .addUserOption(option =>
+      option
+        .setName("user")
+        .setDescription("Target user")
+        .setRequired(true)
+    )
+    .addIntegerOption(option =>
+      option
+        .setName("amount")
+        .setDescription("XP amount")
+        .setMinValue(1)
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("setxp")
+    .setDescription("Admin: set XP")
+    .addUserOption(option =>
+      option
+        .setName("user")
+        .setDescription("Target user")
+        .setRequired(true)
+    )
+    .addIntegerOption(option =>
+      option
+        .setName("amount")
+        .setDescription("XP amount")
+        .setMinValue(0)
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("setlevel")
+    .setDescription("Admin: set level")
+    .addUserOption(option =>
+      option
+        .setName("user")
+        .setDescription("Target user")
+        .setRequired(true)
+    )
+    .addIntegerOption(option =>
+      option
+        .setName("level")
+        .setDescription("Level")
+        .setMinValue(1)
+        .setRequired(true)
+    ),
+
+  // =============================
+  // ADMIN RESET
+  // =============================
+
+  new SlashCommandBuilder()
+    .setName("reseteco")
+    .setDescription("Admin: reset economy")
+    .addUserOption(option =>
+      option
+        .setName("user")
+        .setDescription("Target user")
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("resetlevel")
+    .setDescription("Admin: reset level")
+    .addUserOption(option =>
+      option
+        .setName("user")
+        .setDescription("Target user")
+        .setRequired(true)
+    ),
+
+  // =============================
   // GIVEAWAY
   // =============================
 
@@ -366,12 +564,14 @@ client.once("ready", async () => {
   console.log("================================");
   console.log(`✅ Bot: ${client.user.tag}`);
   console.log(`🧠 Model: ${MODEL}`);
+  console.log("🗄️ MongoDB: ON");
   console.log("🎫 Tickets: ON");
   console.log("🎁 Giveaways: ON");
   console.log("👋 Welcome: ON");
   console.log("⭐ Levels: ON");
   console.log("💰 Economy: ON");
   console.log("🔗 Anti-Link: ON");
+  console.log("🛡️ Admin Economy: ON");
   console.log("================================");
 
   client.user.setActivity(
@@ -525,7 +725,7 @@ ${question}
       }
 
       // =========================
-      // SET AI CHANNEL
+      // AI CHANNEL
       // =========================
 
       if (
@@ -542,10 +742,6 @@ ${question}
           `✅ AI channel set to ${interaction.channel}`
         );
       }
-
-      // =========================
-      // REMOVE AI CHANNEL
-      // =========================
 
       if (
         interaction.commandName ===
@@ -644,7 +840,7 @@ ${question}
       }
 
       // =========================
-      // TICKET PANEL
+      // TICKET
       // =========================
 
       if (
@@ -681,7 +877,7 @@ ${question}
       }
 
       // =========================
-      // SET WELCOME
+      // WELCOME
       // =========================
 
       if (
@@ -699,10 +895,6 @@ ${question}
         );
       }
 
-      // =========================
-      // REMOVE WELCOME
-      // =========================
-
       if (
         interaction.commandName ===
         "removewelcome"
@@ -718,7 +910,7 @@ ${question}
       }
 
       // =========================
-      // ANTILINK
+      // ANTI LINK
       // =========================
 
       if (
@@ -738,9 +930,8 @@ ${question}
           );
 
           return interaction.reply(
-            "🔗 **Anti-Link enabled.**\nDiscord invites and common links will be removed."
+            "🔗 **Anti-Link enabled.**"
           );
-
         }
 
         antiLinkServers.delete(
@@ -767,7 +958,7 @@ ${question}
           ) || interaction.user;
 
         const data =
-          getLevelData(
+          await getUserData(
             interaction.guild.id,
             user.id
           );
@@ -780,8 +971,7 @@ ${question}
           `🏆 Level: **${data.level}**\n` +
           `✨ XP: **${data.xp}/${required}**`
         );
-      }
-
+          }
       // =========================
       // LEADERBOARD
       // =========================
@@ -791,45 +981,22 @@ ${question}
         "leaderboard"
       ) {
 
-        const prefix =
-          `${interaction.guild.id}-`;
+        const users =
+          await UserData.find({
+            guildId:
+              interaction.guild.id
+          })
+          .sort({
+            level: -1,
+            xp: -1
+          })
+          .limit(10);
 
-        const users = [];
-
-        for (
-          const [key, data]
-          of levels.entries()
-        ) {
-
-          if (!key.startsWith(prefix))
-            continue;
-
-          const userId =
-            key.replace(prefix, "");
-
-          users.push({
-            userId,
-            level: data.level,
-            xp: data.xp
-          });
-
-        }
-
-        users.sort(
-          (a, b) =>
-            (b.level * 100 + b.xp) -
-            (a.level * 100 + a.xp)
-        );
-
-        const top =
-          users.slice(0, 10);
-
-        if (!top.length) {
+        if (!users.length) {
 
           return interaction.reply(
             "⭐ No XP data yet."
           );
-
         }
 
         let text =
@@ -837,13 +1004,12 @@ ${question}
 
         for (
           let i = 0;
-          i < top.length;
+          i < users.length;
           i++
         ) {
 
           text +=
-            `**${i + 1}.** <@${top[i].userId}> — Level ${top[i].level} (${top[i].xp} XP)\n`;
-
+            `**${i + 1}.** <@${users[i].userId}> — Level ${users[i].level} (${users[i].xp} XP)\n`;
         }
 
         return interaction.reply(text);
@@ -864,7 +1030,7 @@ ${question}
           ) || interaction.user;
 
         const data =
-          getEconomy(
+          await getUserData(
             interaction.guild.id,
             user.id
           );
@@ -885,7 +1051,7 @@ ${question}
       ) {
 
         const data =
-          getEconomy(
+          await getUserData(
             interaction.guild.id,
             interaction.user.id
           );
@@ -916,11 +1082,12 @@ ${question}
           );
         }
 
-        const reward =
-          500;
+        const reward = 500;
 
         data.coins += reward;
         data.lastDaily = now;
+
+        await data.save();
 
         return interaction.reply(
           `🎁 Daily reward collected!\n\n` +
@@ -952,21 +1119,19 @@ ${question}
           receiver.id ===
           interaction.user.id
         ) {
-
           return interaction.reply(
             "❌ You cannot pay yourself."
           );
         }
 
         if (receiver.bot) {
-
           return interaction.reply(
             "❌ You cannot pay a bot."
           );
         }
 
         const senderData =
-          getEconomy(
+          await getUserData(
             interaction.guild.id,
             interaction.user.id
           );
@@ -975,14 +1140,13 @@ ${question}
           senderData.coins <
           amount
         ) {
-
           return interaction.reply(
             "❌ You don't have enough coins."
           );
         }
 
         const receiverData =
-          getEconomy(
+          await getUserData(
             interaction.guild.id,
             receiver.id
           );
@@ -990,8 +1154,379 @@ ${question}
         senderData.coins -= amount;
         receiverData.coins += amount;
 
+        await senderData.save();
+        await receiverData.save();
+
         return interaction.reply(
           `💸 ${interaction.user} paid **${amount} coins** to ${receiver}.`
+        );
+      }
+
+      // =========================
+      // ADMIN PERMISSION
+      // =========================
+
+      const adminCommands = [
+        "addcash",
+        "removecash",
+        "setcash",
+        "addxp",
+        "removexp",
+        "setxp",
+        "setlevel",
+        "reseteco",
+        "resetlevel"
+      ];
+
+      if (
+        adminCommands.includes(
+          interaction.commandName
+        )
+      ) {
+
+        if (!isAdmin(interaction)) {
+
+          return interaction.reply({
+            content:
+              "❌ You need **Administrator** permission to use this command.",
+            ephemeral: true
+          });
+        }
+      }
+
+      // =========================
+      // ADD CASH
+      // =========================
+
+      if (
+        interaction.commandName ===
+        "addcash"
+      ) {
+
+        const user =
+          interaction.options.getUser(
+            "user"
+          );
+
+        const amount =
+          interaction.options.getInteger(
+            "amount"
+          );
+
+        const data =
+          await getUserData(
+            interaction.guild.id,
+            user.id
+          );
+
+        data.coins += amount;
+
+        await data.save();
+
+        return interaction.reply(
+          `💰 Added **${amount} coins** to ${user}.\n` +
+          `💵 New balance: **${data.coins}**`
+        );
+      }
+
+      // =========================
+      // REMOVE CASH
+      // =========================
+
+      if (
+        interaction.commandName ===
+        "removecash"
+      ) {
+
+        const user =
+          interaction.options.getUser(
+            "user"
+          );
+
+        const amount =
+          interaction.options.getInteger(
+            "amount"
+          );
+
+        const data =
+          await getUserData(
+            interaction.guild.id,
+            user.id
+          );
+
+        data.coins =
+          Math.max(
+            0,
+            data.coins - amount
+          );
+
+        await data.save();
+
+        return interaction.reply(
+          `💸 Removed **${amount} coins** from ${user}.\n` +
+          `💵 New balance: **${data.coins}**`
+        );
+      }
+
+      // =========================
+      // SET CASH
+      // =========================
+
+      if (
+        interaction.commandName ===
+        "setcash"
+      ) {
+
+        const user =
+          interaction.options.getUser(
+            "user"
+          );
+
+        const amount =
+          interaction.options.getInteger(
+            "amount"
+          );
+
+        const data =
+          await getUserData(
+            interaction.guild.id,
+            user.id
+          );
+
+        data.coins = amount;
+
+        await data.save();
+
+        return interaction.reply(
+          `💰 ${user}'s balance set to **${amount} coins**.`
+        );
+      }
+
+      // =========================
+      // ADD XP
+      // =========================
+
+      if (
+        interaction.commandName ===
+        "addxp"
+      ) {
+
+        const user =
+          interaction.options.getUser(
+            "user"
+          );
+
+        const amount =
+          interaction.options.getInteger(
+            "amount"
+          );
+
+        const data =
+          await getUserData(
+            interaction.guild.id,
+            user.id
+          );
+
+        data.xp += amount;
+
+        while (
+          data.xp >=
+          xpRequired(data.level)
+        ) {
+
+          data.xp -=
+            xpRequired(data.level);
+
+          data.level++;
+        }
+
+        await data.save();
+
+        return interaction.reply(
+          `⭐ Added **${amount} XP** to ${user}.\n` +
+          `🏆 Level: **${data.level}**\n` +
+          `✨ XP: **${data.xp}**`
+        );
+      }
+
+      // =========================
+      // REMOVE XP
+      // =========================
+
+      if (
+        interaction.commandName ===
+        "removexp"
+      ) {
+
+        const user =
+          interaction.options.getUser(
+            "user"
+          );
+
+        const amount =
+          interaction.options.getInteger(
+            "amount"
+          );
+
+        const data =
+          await getUserData(
+            interaction.guild.id,
+            user.id
+          );
+
+        data.xp =
+          Math.max(
+            0,
+            data.xp - amount
+          );
+
+        await data.save();
+
+        return interaction.reply(
+          `⭐ Removed **${amount} XP** from ${user}.\n` +
+          `🏆 Level: **${data.level}**\n` +
+          `✨ XP: **${data.xp}**`
+        );
+      }
+
+      // =========================
+      // SET XP
+      // =========================
+
+      if (
+        interaction.commandName ===
+        "setxp"
+      ) {
+
+        const user =
+          interaction.options.getUser(
+            "user"
+          );
+
+        const amount =
+          interaction.options.getInteger(
+            "amount"
+          );
+
+        const data =
+          await getUserData(
+            interaction.guild.id,
+            user.id
+          );
+
+        data.xp = amount;
+
+        while (
+          data.xp >=
+          xpRequired(data.level)
+        ) {
+
+          data.xp -=
+            xpRequired(data.level);
+
+          data.level++;
+        }
+
+        await data.save();
+
+        return interaction.reply(
+          `⭐ ${user}'s XP set to **${amount}**.\n` +
+          `🏆 Level: **${data.level}**`
+        );
+      }
+
+      // =========================
+      // SET LEVEL
+      // =========================
+
+      if (
+        interaction.commandName ===
+        "setlevel"
+      ) {
+
+        const user =
+          interaction.options.getUser(
+            "user"
+          );
+
+        const level =
+          interaction.options.getInteger(
+            "level"
+          );
+
+        const data =
+          await getUserData(
+            interaction.guild.id,
+            user.id
+          );
+
+        data.level = level;
+        data.xp = 0;
+
+        await data.save();
+
+        return interaction.reply(
+          `🏆 ${user}'s level set to **${level}**.`
+        );
+      }
+
+      // =========================
+      // RESET ECONOMY
+      // =========================
+
+      if (
+        interaction.commandName ===
+        "reseteco"
+      ) {
+
+        const user =
+          interaction.options.getUser(
+            "user"
+          );
+
+        const data =
+          await getUserData(
+            interaction.guild.id,
+            user.id
+          );
+
+        data.coins = 0;
+        data.lastDaily = 0;
+
+        await data.save();
+
+        return interaction.reply(
+          `🔄 Economy reset for ${user}.\n💰 Balance: **0**`
+        );
+      }
+
+      // =========================
+      // RESET LEVEL
+      // =========================
+
+      if (
+        interaction.commandName ===
+        "resetlevel"
+      ) {
+
+        const user =
+          interaction.options.getUser(
+            "user"
+          );
+
+        const data =
+          await getUserData(
+            interaction.guild.id,
+            user.id
+          );
+
+        data.xp = 0;
+        data.level = 1;
+
+        await data.save();
+
+        return interaction.reply(
+          `🔄 Level reset for ${user}.\n⭐ Level: **1**\n✨ XP: **0**`
         );
       }
 
@@ -1177,6 +1712,17 @@ ${question}
           `/daily\n` +
           `/pay\n\n` +
 
+          `🛡️ **Admin Economy / Level**\n` +
+          `/addcash\n` +
+          `/removecash\n` +
+          `/setcash\n` +
+          `/addxp\n` +
+          `/removexp\n` +
+          `/setxp\n` +
+          `/setlevel\n` +
+          `/reseteco\n` +
+          `/resetlevel\n\n` +
+
           `📢 **Announcements**\n` +
           `/announce\n\n` +
 
@@ -1194,30 +1740,20 @@ ${question}
         error
       );
 
-      if (
-        interaction.deferred
-      ) {
-
+      if (interaction.deferred) {
         return interaction.editReply(
           "❌ Command error."
         );
-
       }
 
-      if (
-        !interaction.replied
-      ) {
-
+      if (!interaction.replied) {
         return interaction.reply({
           content:
             "❌ Command error.",
           ephemeral: true
         });
-
       }
-
     }
-
   }
 );
 
@@ -1229,9 +1765,8 @@ client.on(
   "interactionCreate",
   async interaction => {
 
-    if (
-      !interaction.isButton()
-    ) return;
+    if (!interaction.isButton())
+      return;
 
     try {
 
@@ -1258,7 +1793,6 @@ client.on(
               `🎫 You already have a ticket: ${existing}`,
             ephemeral: true
           });
-
         }
 
         const channel =
@@ -1343,13 +1877,9 @@ client.on(
 
         setTimeout(
           async () => {
-
             try {
-
               await interaction.channel.delete();
-
             } catch {}
-
           },
           3000
         );
@@ -1358,7 +1888,7 @@ client.on(
       }
 
       // =========================
-      // GIVEAWAY ENTRY
+      // GIVEAWAY
       // =========================
 
       if (
@@ -1385,7 +1915,6 @@ client.on(
               "❌ This giveaway has ended.",
             ephemeral: true
           });
-
         }
 
         if (
@@ -1403,7 +1932,6 @@ client.on(
               "❌ You left the giveaway.",
             ephemeral: true
           });
-
         }
 
         giveaway.participants.add(
@@ -1423,14 +1951,12 @@ client.on(
         "BUTTON ERROR:",
         error
       );
-
     }
-
   }
 );
 
 // ===============================
-// AUTOMATIC AI + XP + ANTI LINK
+// MESSAGE SYSTEM
 // ===============================
 
 client.on(
@@ -1488,7 +2014,6 @@ client.on(
             "ANTI LINK ERROR:",
             error
           );
-
         }
 
         return;
@@ -1496,46 +2021,58 @@ client.on(
     }
 
     // ===========================
-    // XP SYSTEM
+    // XP
     // ===========================
 
-    const levelData =
-      getLevelData(
-        guild.id,
-        message.author.id
-      );
+    try {
 
-    const gainedXP =
-      Math.floor(
-        Math.random() * 11
-      ) + 10;
-
-    levelData.xp +=
-      gainedXP;
-
-    const needed =
-      xpRequired(
-        levelData.level
-      );
-
-    if (
-      levelData.xp >=
-      needed
-    ) {
-
-      levelData.xp -=
-        needed;
-
-      levelData.level++;
-
-      try {
-
-        await message.channel.send(
-          `🎉 ${message.author} reached **Level ${levelData.level}**!`
+      const data =
+        await getUserData(
+          guild.id,
+          message.author.id
         );
 
-      } catch {}
+      const gainedXP =
+        Math.floor(
+          Math.random() * 11
+        ) + 10;
 
+      data.xp += gainedXP;
+
+      let levelUp = false;
+
+      while (
+        data.xp >=
+        xpRequired(data.level)
+      ) {
+
+        data.xp -=
+          xpRequired(data.level);
+
+        data.level++;
+
+        levelUp = true;
+      }
+
+      await data.save();
+
+      if (levelUp) {
+
+        try {
+
+          await message.channel.send(
+            `🎉 ${message.author} reached **Level ${data.level}**!`
+          );
+
+        } catch {}
+      }
+
+    } catch (error) {
+
+      console.error(
+        "XP DATABASE ERROR:",
+        error
+      );
     }
 
     // ===========================
@@ -1585,14 +2122,48 @@ Reply naturally and helpfully.
         "AUTO AI ERROR:",
         error
       );
-
     }
-
   }
 );
 
 // ===============================
-// WEB SERVER FOR RENDER
+// DATABASE CONNECT
+// ===============================
+
+async function connectDatabase() {
+
+  try {
+
+    await mongoose.connect(
+      MONGODB_URI
+    );
+
+    console.log(
+      "================================"
+    );
+
+    console.log(
+      "✅ MongoDB connected"
+    );
+
+    console.log(
+      "================================"
+    );
+
+  } catch (error) {
+
+    console.error(
+      "❌ MongoDB connection error:"
+    );
+
+    console.error(error);
+
+    process.exit(1);
+  }
+}
+
+// ===============================
+// WEB SERVER
 // ===============================
 
 const app = express();
@@ -1615,6 +2186,9 @@ app.get(
     res.json({
       status: "online",
       model: MODEL,
+      database: mongoose.connection.readyState === 1
+        ? "connected"
+        : "disconnected",
       features: [
         "AI",
         "Tickets",
@@ -1622,7 +2196,8 @@ app.get(
         "Welcome",
         "Levels",
         "Economy",
-        "Anti-Link"
+        "Anti-Link",
+        "Admin Economy"
       ]
     });
 
@@ -1644,7 +2219,16 @@ app.listen(
 );
 
 // ===============================
-// LOGIN
+// START
 // ===============================
 
-client.login(TOKEN);
+async function startBot() {
+
+  await connectDatabase();
+
+  await client.login(TOKEN);
+
+}
+
+startBot();
+     
