@@ -17,7 +17,7 @@ const CLIENT_ID = process.env.CLIENT_ID;
 const GEMINI_KEY = process.env.GEMINI_API_KEY;
 
 if (!TOKEN || !CLIENT_ID || !GEMINI_KEY) {
-  console.error("Missing environment variables");
+  console.error("❌ Missing environment variables");
   process.exit(1);
 }
 
@@ -29,14 +29,14 @@ const client = new Client({
   ]
 });
 
-const gemini = new GoogleGenAI({
+const ai = new GoogleGenAI({
   apiKey: GEMINI_KEY
 });
 
 const aiChannels = new Map();
 const logChannels = new Map();
-const warns = new Map();
-const cooldowns = new Map();
+const warnings = new Map();
+const cooldown = new Map();
 
 const commands = [
   new SlashCommandBuilder()
@@ -44,7 +44,7 @@ const commands = [
     .setDescription("Ask Prime AI")
     .addStringOption(o =>
       o.setName("question")
-       .setDescription("Your question")
+       .setDescription("Ask anything")
        .setRequired(true)
     ),
 
@@ -53,7 +53,7 @@ const commands = [
     .setDescription("Set automatic AI channel")
     .addChannelOption(o =>
       o.setName("channel")
-       .setDescription("AI channel")
+       .setDescription("Select AI channel")
        .addChannelTypes(ChannelType.GuildText)
        .setRequired(true)
     )
@@ -87,7 +87,7 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("warnings")
-    .setDescription("Check warnings")
+    .setDescription("View warnings")
     .addUserOption(o =>
       o.setName("user")
        .setDescription("Member")
@@ -209,7 +209,7 @@ const commands = [
     .setDescription("Set slowmode")
     .addIntegerOption(o =>
       o.setName("seconds")
-       .setDescription("0-21600")
+       .setDescription("0-21600 seconds")
        .setMinValue(0)
        .setMaxValue(21600)
        .setRequired(true)
@@ -220,7 +220,7 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("setlogchannel")
-    .setDescription("Set moderation logs")
+    .setDescription("Set log channel")
     .addChannelOption(o =>
       o.setName("channel")
        .setDescription("Log channel")
@@ -257,28 +257,32 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("help")
-    .setDescription("All commands")
+    .setDescription("Show commands")
 ];
 
-async function askAI(text) {
+async function askAI(prompt) {
   try {
-    const result = await gemini.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: text
+    console.log("🤖 Gemini request started");
+
+    const response = await ai.models.generateContent({
+      model: "gemini-3.8-flash",
+      contents: prompt
     });
 
-    return result.text || "No response.";
+    console.log("✅ Gemini response received");
+
+    return response.text || "AI returned an empty response.";
   } catch (error) {
-    console.error("AI ERROR:", error);
-    return "❌ AI is currently unavailable.";
+    console.error("❌ GEMINI ERROR:", error);
+    return "❌ Gemini request failed. Check Render logs.";
   }
 }
 
 async function sendLog(guild, text) {
-  const id = logChannels.get(guild.id);
-  if (!id) return;
+  const channelId = logChannels.get(guild.id);
+  if (!channelId) return;
 
-  const channel = guild.channels.cache.get(id);
+  const channel = guild.channels.cache.get(channelId);
   if (!channel) return;
 
   channel.send({
@@ -304,7 +308,9 @@ client.once("ready", async () => {
     status: "online"
   });
 
-  const rest = new REST({ version: "10" }).setToken(TOKEN);
+  const rest = new REST({
+    version: "10"
+  }).setToken(TOKEN);
 
   try {
     await rest.put(
@@ -316,7 +322,7 @@ client.once("ready", async () => {
 
     console.log("✅ Slash commands registered");
   } catch (error) {
-    console.error("COMMAND ERROR:", error);
+    console.error("❌ COMMAND ERROR:", error);
   }
 });
 
@@ -332,7 +338,13 @@ client.on("interactionCreate", async interaction => {
       const question =
         interaction.options.getString("question");
 
-      const answer = await askAI(question);
+      const answer = await askAI(
+        `You are Prime Development Studio AI.
+Be helpful, friendly and concise.
+
+User:
+${question}`
+      );
 
       return interaction.editReply({
         embeds: [
@@ -357,7 +369,7 @@ client.on("interactionCreate", async interaction => {
       );
 
       return interaction.reply(
-        `✅ AI channel set to ${channel}`
+        `✅ Automatic AI channel set to ${channel}`
       );
     }
 
@@ -379,14 +391,15 @@ client.on("interactionCreate", async interaction => {
       const key =
         `${interaction.guild.id}:${user.id}`;
 
-      const list = warns.get(key) || [];
+      const list =
+        warnings.get(key) || [];
 
       list.push({
         reason,
         moderator: interaction.user.tag
       });
 
-      warns.set(key, list);
+      warnings.set(key, list);
 
       await sendLog(
         interaction.guild,
@@ -394,7 +407,7 @@ client.on("interactionCreate", async interaction => {
       );
 
       return interaction.reply(
-        `⚠️ ${user} warned.\nReason: ${reason}\nTotal: ${list.length}`
+        `⚠️ ${user} warned.\nReason: ${reason}\nTotal warnings: ${list.length}`
       );
     }
 
@@ -405,7 +418,8 @@ client.on("interactionCreate", async interaction => {
       const key =
         `${interaction.guild.id}:${user.id}`;
 
-      const list = warns.get(key) || [];
+      const list =
+        warnings.get(key) || [];
 
       if (!list.length) {
         return interaction.reply(
@@ -414,8 +428,8 @@ client.on("interactionCreate", async interaction => {
       }
 
       const text = list
-        .map((x, i) =>
-          `**${i + 1}.** ${x.reason} — ${x.moderator}`
+        .map((w, i) =>
+          `**${i + 1}.** ${w.reason} — ${w.moderator}`
         )
         .join("\n");
 
@@ -424,7 +438,7 @@ client.on("interactionCreate", async interaction => {
           new EmbedBuilder()
             .setColor(0xfee75c)
             .setTitle(`⚠️ Warnings — ${user.tag}`)
-            .setDescription(text)
+            .setDescription(text.slice(0, 4000))
         ]
       });
     }
@@ -483,6 +497,12 @@ client.on("interactionCreate", async interaction => {
       const member =
         await interaction.guild.members.fetch(user.id);
 
+      if (!member.moderatable) {
+        return interaction.reply(
+          "❌ I cannot modify this member."
+        );
+      }
+
       await member.timeout(null);
 
       return interaction.reply(
@@ -531,7 +551,9 @@ client.on("interactionCreate", async interaction => {
         interaction.options.getString("reason") ||
         "No reason";
 
-      await member.ban({ reason });
+      await member.ban({
+        reason
+      });
 
       return interaction.reply(
         `🔨 ${user.tag} was banned.`
@@ -545,26 +567,34 @@ client.on("interactionCreate", async interaction => {
       await interaction.guild.members.unban(id);
 
       return interaction.reply(
-        `✅ ${id} unbanned.`
+        `✅ User ${id} unbanned.`
       );
     }
 
     if (cmd === "lock") {
       await interaction.channel.permissionOverwrites.edit(
         interaction.guild.roles.everyone,
-        { SendMessages: false }
+        {
+          SendMessages: false
+        }
       );
 
-      return interaction.reply("🔒 Channel locked.");
+      return interaction.reply(
+        "🔒 Channel locked."
+      );
     }
 
     if (cmd === "unlock") {
       await interaction.channel.permissionOverwrites.edit(
         interaction.guild.roles.everyone,
-        { SendMessages: null }
+        {
+          SendMessages: null
+        }
       );
 
-      return interaction.reply("🔓 Channel unlocked.");
+      return interaction.reply(
+        "🔓 Channel unlocked."
+      );
     }
 
     if (cmd === "slowmode") {
@@ -576,7 +606,7 @@ client.on("interactionCreate", async interaction => {
       );
 
       return interaction.reply(
-        `🐌 Slowmode: ${seconds}s`
+        `🐌 Slowmode set to ${seconds} seconds.`
       );
     }
 
@@ -595,27 +625,30 @@ client.on("interactionCreate", async interaction => {
     }
 
     if (cmd === "serverinfo") {
-      const g = interaction.guild;
+      const guild =
+        interaction.guild;
 
       return interaction.reply({
         embeds: [
           new EmbedBuilder()
             .setColor(0x5865f2)
-            .setTitle(`📊 ${g.name}`)
+            .setTitle(`📊 ${guild.name}`)
             .addFields(
               {
                 name: "👥 Members",
-                value: `${g.memberCount}`,
+                value: `${guild.memberCount}`,
                 inline: true
               },
               {
                 name: "💬 Channels",
-                value: `${g.channels.cache.size}`,
+                value:
+                  `${guild.channels.cache.size}`,
                 inline: true
               },
               {
                 name: "🎭 Roles",
-                value: `${g.roles.cache.size}`,
+                value:
+                  `${guild.roles.cache.size}`,
                 inline: true
               }
             )
@@ -633,9 +666,11 @@ client.on("interactionCreate", async interaction => {
           new EmbedBuilder()
             .setColor(0x5865f2)
             .setTitle(`👤 ${user.tag}`)
-            .setThumbnail(user.displayAvatarURL())
+            .setThumbnail(
+              user.displayAvatarURL()
+            )
             .addFields({
-              name: "🆔 ID",
+              name: "🆔 User ID",
               value: user.id
             })
         ]
@@ -685,28 +720,45 @@ client.on("interactionCreate", async interaction => {
         embeds: [
           new EmbedBuilder()
             .setColor(0x5865f2)
-            .setTitle("🤖 Prime Development Studio")
+            .setTitle(
+              "🤖 Prime Development Studio AI"
+            )
             .setDescription(
-              "**AI**\n" +
+              "**🤖 AI**\n" +
               "`/ai` `/setaichannel` `/removeaichannel`\n\n" +
-              "**Moderation**\n" +
+
+              "**🛡️ Moderation**\n" +
               "`/warn` `/warnings` `/clear`\n" +
-              "`/timeout` `/untimeout` `/kick` `/ban` `/unban`\n\n" +
-              "**Security & Channels**\n" +
-              "`/lock` `/unlock` `/slowmode` `/setlogchannel`\n\n" +
-              "**Information**\n" +
+              "`/timeout` `/untimeout` `/kick`\n" +
+              "`/ban` `/unban`\n\n" +
+
+              "**🔒 Channel**\n" +
+              "`/lock` `/unlock` `/slowmode`\n" +
+              "`/setlogchannel`\n\n" +
+
+              "**📊 Information**\n" +
               "`/serverinfo` `/userinfo` `/avatar`\n\n" +
-              "**System**\n" +
+
+              "**⚙️ System**\n" +
               "`/settings` `/help`"
             )
+            .setFooter({
+              text: "Prime Development Studio"
+            })
         ]
       });
     }
 
   } catch (error) {
-    console.error("INTERACTION ERROR:", error);
+    console.error(
+      "❌ INTERACTION ERROR:",
+      error
+    );
 
-    if (interaction.replied || interaction.deferred) {
+    if (
+      interaction.replied ||
+      interaction.deferred
+    ) {
       return interaction.editReply(
         "❌ Something went wrong."
       );
@@ -720,58 +772,95 @@ client.on("interactionCreate", async interaction => {
 });
 
 client.on("messageCreate", async message => {
-  if (message.author.bot || !message.guild) return;
+  if (
+    message.author.bot ||
+    !message.guild
+  ) return;
 
   const channelId =
     aiChannels.get(message.guild.id);
 
-  if (message.channel.id !== channelId) return;
+  if (
+    !channelId ||
+    message.channel.id !== channelId
+  ) return;
+
+  console.log(
+    `💬 AI message from ${message.author.tag}`
+  );
 
   const last =
-    cooldowns.get(message.author.id) || 0;
+    cooldown.get(message.author.id) || 0;
 
-  if (Date.now() - last < 2000) return;
+  if (
+    Date.now() - last < 2000
+  ) return;
 
-  cooldowns.set(
+  cooldown.set(
     message.author.id,
     Date.now()
   );
 
-  const text = message.content.trim();
+  const text =
+    message.content.trim();
 
-  if (!text || text.length > 1500) return;
+  if (!text) return;
 
-  await message.channel.sendTyping();
+  if (text.length > 1500) {
+    return message.reply(
+      "❌ Message is too long. Keep it under 1500 characters."
+    );
+  }
 
-  const answer = await askAI(
-    `You are Prime Development Studio AI Discord assistant.
-Answer naturally and helpfully.
+  try {
+    await message.channel.sendTyping();
 
-User:
+    const answer =
+      await askAI(
+        `You are Prime Development Studio AI,
+a friendly Discord assistant.
+
+User message:
 ${text}`
-  );
+      );
 
-  await message.reply({
-    embeds: [
-      new EmbedBuilder()
-        .setColor(0x5865f2)
-        .setTitle("🤖 Prime AI")
-        .setDescription(answer.slice(0, 4000))
-        .setFooter({
-          text: "Prime Development Studio"
-        })
-    ]
-  });
+    await message.reply({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(0x5865f2)
+          .setTitle("🤖 Prime AI")
+          .setDescription(
+            answer.slice(0, 4000)
+          )
+          .setFooter({
+            text: "Prime Development Studio"
+          })
+      ]
+    });
+
+  } catch (error) {
+    console.error(
+      "❌ MESSAGE AI ERROR:",
+      error
+    );
+  }
 });
 
 const app = express();
 
 app.get("/", (req, res) => {
-  res.send("Prime Development Studio AI is ONLINE!");
+  res.send(
+    "Prime Development Studio AI is ONLINE!"
+  );
 });
 
-app.listen(process.env.PORT || 3000, () => {
-  console.log("🌐 Web server started");
-});
+app.listen(
+  process.env.PORT || 3000,
+  () => {
+    console.log(
+      "🌐 Web server started"
+    );
+  }
+);
 
 client.login(TOKEN);
