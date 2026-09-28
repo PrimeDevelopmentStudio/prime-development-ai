@@ -1,13 +1,17 @@
 {
-  "name": "prime-development-studio-ai",
-  "version": "1.0.0",
-  "description": "Prime Development Studio AI Discord Bot",
+  "name": "prime-development-ai",
+  "version": "3.0.0",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
-    "@google/genai": "latest",
-    "discord.js": "latest"
+    "@google/genai": "^1.0.0",
+    "discord.js": "^14.0.0",
+    "express": "^5.0.0",
+    "dotenv": "^16.4.7"
   }
 }
