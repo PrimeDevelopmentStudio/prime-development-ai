@@ -17,7 +17,7 @@ const MODEL = process.env.GEMINI_MODEL || "gemini-1.5-flash";
 const PORT = process.env.PORT || 3000;
 
 if (!TOKEN || !CLIENT_ID || !GEMINI_API_KEY) {
-  console.error("❌ Missing DISCORD_TOKEN, CLIENT_ID or GEMINI_API_KEY in .env");
+  console.error("❌ Missing DISCORD_TOKEN, CLIENT_ID or GEMINI_API_KEY in Environment Variables!");
   process.exit(1);
 }
 
@@ -25,7 +25,6 @@ const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 const DATA_FILE = path.join(__dirname, "data.json");
 const DEFAULT = { guilds: {}, users: {}, warnings: {}, giveaways: {} };
 
-// Caches for Security
 const joinLog = [];
 const actionCache = new Map();
 const RAID_JOIN_LIMIT = 5;
@@ -122,11 +121,15 @@ async function sendLog(guild, text) {
   if (ch) await ch.send(`📋 ${text}`).catch(() => {});
 }
 
+// Safe Client Intents Configuration to avoid BitField errors
 const client = new Client({
   intents: [
-    GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildModeration, GatewayIntentBits.GuildAuditLogs
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildModeration,
+    GatewayIntentBits.GuildAuditLogs
   ]
 });
 
@@ -203,7 +206,6 @@ client.once("ready", async () => {
   catch (e) { console.error("COMMAND REGISTER ERROR:", e); }
 });
 
-// INTERACTION HANDLER
 client.on("interactionCreate", async i => {
   try {
     if (i.isButton()) {
@@ -272,7 +274,6 @@ client.on("interactionCreate", async i => {
       await i.channel.send({embeds:[e]}); return i.reply({content:"✅ Announcement published.",ephemeral:true});
     }
 
-    // ECONOMY & XP SYSTEM
     if (c==="balance") { const u=i.options.getUser("user")||i.user; return i.reply(`💰 **${u.username}** has **${ud(g.id,u.id).cash}** cash.`); }
     if (["daily","work","crime"].includes(c)) {
       const d=ud(g.id,i.user.id), now=Date.now();
@@ -324,7 +325,6 @@ client.on("interactionCreate", async i => {
   }
 });
 
-// GIVEAWAY SYSTEM
 async function finishGiveaway(id){
   const g=db.giveaways[id]; if(!g) return;
   try{
@@ -338,7 +338,6 @@ async function finishGiveaway(id){
   delete db.giveaways[id]; saveData();
 }
 
-// ANTI-NUKE MONITORING
 async function handleAntiNuke(guild, executorId, actionType) {
   const g = gd(guild.id);
   if (!g.antiNuke || executorId === client.user.id || executorId === guild.ownerId) return;
@@ -355,7 +354,7 @@ async function handleAntiNuke(guild, executorId, actionType) {
       const member = await guild.members.fetch(executorId).catch(() => null);
       if (member && member.bannable) {
         await member.ban({ reason: `Anti-Nuke Protection Triggered: Mass ${actionType}` });
-        await sendLog(guild, `🚨 **ANTI-NUKE BANNED** ${member.user.tag} for deleting channels/roles/bans.`);
+        await sendLog(guild, `🚨 **ANTI-NUKE BANNED** ${member.user.tag} for deleting channels/roles.`);
       }
     } catch (err) {
       console.error('Anti-Nuke Action Error:', err);
@@ -377,12 +376,10 @@ client.on('roleDelete', async (role) => {
   if (entry) handleAntiNuke(role.guild, entry.executor.id, 'Roles');
 });
 
-// MESSAGE EVENTS & AUTOMOD
 client.on("messageCreate", async msg=>{
   if(msg.author.bot || !msg.guild) return;
   const g=gd(msg.guild.id);
 
-  // Anti-Link Protection
   if(g.antiLink && /(https?:\/\/|www\.)\S+/i.test(msg.content) && !msg.member.permissions.has(PermissionFlagsBits.ManageMessages)){
     await msg.delete().catch(()=>{});
     const m=await msg.channel.send(`🔗 ${msg.author}, links are strictly prohibited in this server.`).catch(()=>null);
@@ -391,7 +388,6 @@ client.on("messageCreate", async msg=>{
     return;
   }
 
-  // XP Progress System
   const d=ud(msg.guild.id,msg.author.id);
   d.xp+=5;
   if(d.xp>=d.level*100){
@@ -400,7 +396,6 @@ client.on("messageCreate", async msg=>{
   }
   saveData();
 
-  // AI Channel Triggering
   if(g.aiChannelId===msg.channel.id){
     const result=await aiAction(msg.content,msg.member);
     const adminOnly=["addcash","removecash","setcash","addxp","setlevel","antilink_on","antilink_off"];
@@ -422,11 +417,9 @@ client.on("messageCreate", async msg=>{
   }
 });
 
-// MEMBER JOIN EVENTS (Anti-Raid + Autorole + Welcome)
 client.on("guildMemberAdd",async member=>{
   const g=gd(member.guild.id);
 
-  // Anti-Raid System
   if(g.antiRaid){
     const now = Date.now();
     joinLog.push(now);
@@ -441,19 +434,16 @@ client.on("guildMemberAdd",async member=>{
     }
   }
 
-  // Autorole
   if(g.autoroleId) await member.roles.add(g.autoroleId).catch(()=>{});
   
-  // Welcome Message
   if(g.welcomeChannelId){
     const ch=member.guild.channels.cache.get(g.welcomeChannelId);
     if(ch) ch.send(g.welcomeMessage.replaceAll("{user}",`${member}`).replaceAll("{server}",member.guild.name)).catch(()=>{});
   }
 });
 
-// EXPRESS HEALTH SERVER FOR 24/7 HOSTING (Render / Replit)
 const app=express();
-app.get("/",(_,res)=>res.send("Prime Development Studio Bot (V8 Ultra) Active."));
+app.get("/",(_,res)=>res.send("Prime Development Studio Bot (V9 Ultra) Active."));
 app.get("/health",(_,res)=>res.json({ok:true,model:MODEL,status:"Online"}));
 app.listen(PORT,()=>console.log(`🌐 Web interface active on port ${PORT}`));
 
