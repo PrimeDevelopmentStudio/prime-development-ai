@@ -2,7 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const {
   Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes,
-  PermissionFlagsBits, ChannelType, EmbedBuilder
+  PermissionFlagsBits, ChannelType
 } = require("discord.js");
 const { Player } = require("discord-player");
 
@@ -26,30 +26,33 @@ const client = new Client({
   ]
 });
 
-// Initialize Music Player
 const player = new Player(client);
-// Extractors automatically register in newer discord-player versions
-
-// Store AI Channel IDs per server in memory for instant speed
 const aiChannels = new Map();
 
-// Super Fast Direct Gemini AI Function
+// Fixed & Updated Gemini AI Function (Using gemini-2.0-flash)
 async function askAI(promptText) {
   try {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ contents: [{ parts: [{ text: promptText }] }] })
     });
+    
     const data = await response.json();
+    
+    // Agar Google API se koi error aaye toh console mein print karega
+    if (data.error) {
+      console.error("Gemini API Error Details:", data.error);
+      return `❌ AI Error: ${data.error.message || "Unknown error"}`;
+    }
+
     return data?.candidates?.[0]?.content?.parts?.[0]?.text || "No response generated.";
   } catch (err) {
-    console.error("AI Error:", err);
-    return "❌ AI is currently busy, please try again.";
+    console.error("Fetch Exception:", err);
+    return "❌ Network error while connecting to AI.";
   }
 }
 
-// Slash Commands Setup
 const commands = [
   new SlashCommandBuilder()
     .setName("ai")
@@ -83,7 +86,6 @@ client.once("ready", async () => {
   }
 });
 
-// Interaction Handler
 client.on("interactionCreate", async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
@@ -100,7 +102,7 @@ client.on("interactionCreate", async interaction => {
     if (commandName === "setai") {
       const channel = options.getChannel("channel");
       aiChannels.set(guild.id, channel.id);
-      return interaction.reply({ content: `⚡ Successfully **${channel}** ko **Instant AI Channel** set kar diya gaya hai! Ab yahan bina command ke jo bhi likhega bot fatafat jawab dega.`, ephemeral: true });
+      return interaction.reply({ content: `⚡ Successfully **${channel}** ko **Instant AI Channel** set kar diya gaya hai!`, ephemeral: true });
     }
 
     if (commandName === "play") {
@@ -114,18 +116,12 @@ client.on("interactionCreate", async interaction => {
       await interaction.deferReply();
 
       try {
-        const queue = player.nodes.create(guild, {
-          metadata: interaction.channel
-        });
-
+        const queue = player.nodes.create(guild, { metadata: interaction.channel });
         if (!queue.connection) await queue.connect(voiceChannel);
 
-        const searchResult = await player.search(query, {
-          requestedBy: interaction.user
-        });
-
+        const searchResult = await player.search(query, { requestedBy: interaction.user });
         if (!searchResult.hasTracks()) {
-          return interaction.editReply("❌ Koi song nahi mila! Kripya sahi naam daalein.");
+          return interaction.editReply("❌ Koi song nahi mila!");
         }
 
         queue.addTrack(searchResult.tracks[0]);
@@ -142,23 +138,18 @@ client.on("interactionCreate", async interaction => {
       const queue = player.nodes.get(guild.id);
       if (!queue) return interaction.reply({ content: "❌ Abhi koi song play nahi ho raha hai.", ephemeral: true });
       queue.delete();
-      return interaction.reply("⏹️ Music stopped and bot disconnected from voice channel.");
+      return interaction.reply("⏹️ Music stopped and bot disconnected.");
     }
   } catch (err) {
     console.error("Interaction Error:", err);
-    if (!interaction.replied && !interaction.deferred) {
-      await interaction.reply({ content: "❌ Kuch error aa gaya hai.", ephemeral: true }).catch(() => {});
-    }
   }
 });
 
-// Fatafat Answer dene wala Instant AI Message Handler (For SetAI Channel)
 client.on("messageCreate", async message => {
   if (message.author.bot || !message.guild) return;
 
   const targetChannelId = aiChannels.get(message.guild.id);
   if (targetChannelId && message.channel.id === targetChannelId) {
-    // Typing indicator taaki pata chale bot fast likh raha hai
     await message.channel.sendTyping();
     const reply = await askAI(message.content);
     const finalReply = reply.length > 2000 ? reply.slice(0, 1997) + "..." : reply;
@@ -166,9 +157,8 @@ client.on("messageCreate", async message => {
   }
 });
 
-// Express Web Server for 24/7 Uptime (Render)
 const app = express();
-app.get("/", (_, res) => res.send("AI & Music Bot is running 24/7!"));
+app.get("/", (_, res) => res.send("Bot is running 24/7!"));
 app.listen(PORT, () => console.log(`🌐 Web server active on port ${PORT}`));
 
 client.login(TOKEN);
