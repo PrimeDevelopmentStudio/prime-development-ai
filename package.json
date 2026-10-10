@@ -1,5 +1,5 @@
 {
-  "name": "ai-discord-bot",
+  "name": "ai-music-bot",
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
@@ -10,7 +10,10 @@
   },
   "dependencies": {
     "discord.js": "^14.14.0",
+    "@discordjs/voice": "^0.17.0",
+    "discord-player": "^6.6.6",
     "dotenv": "^16.4.5",
-    "express": "^4.19.2"
+    "express": "^4.19.2",
+    "play-dl": "^1.9.7"
   }
 }
