@@ -29,10 +29,10 @@ const client = new Client({
 const player = new Player(client);
 const aiChannels = new Map();
 
-// Fixed & Updated Gemini AI Function (Using gemini-2.0-flash)
+// Updated Gemini AI Function using gemini-3.8-flash
 async function askAI(promptText) {
   try {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`, {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${GEMINI_API_KEY}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ contents: [{ parts: [{ text: promptText }] }] })
@@ -40,7 +40,6 @@ async function askAI(promptText) {
     
     const data = await response.json();
     
-    // Agar Google API se koi error aaye toh console mein print karega
     if (data.error) {
       console.error("Gemini API Error Details:", data.error);
       return `❌ AI Error: ${data.error.message || "Unknown error"}`;
