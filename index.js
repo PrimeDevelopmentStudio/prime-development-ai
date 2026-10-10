@@ -29,27 +29,37 @@ const client = new Client({
 const player = new Player(client);
 const aiChannels = new Map();
 
-// Updated Gemini AI Function using gemini-3.8-flash
+// Updated Gemini AI Function with Automatic Retry for High Demand
 async function askAI(promptText) {
-  try {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${GEMINI_API_KEY}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ contents: [{ parts: [{ text: promptText }] }] })
-    });
-    
-    const data = await response.json();
-    
-    if (data.error) {
-      console.error("Gemini API Error Details:", data.error);
-      return `❌ AI Error: ${data.error.message || "Unknown error"}`;
-    }
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${GEMINI_API_KEY}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contents: [{ parts: [{ text: promptText }] }] })
+      });
+      
+      const data = await response.json();
+      
+      if (data.candidates && data.candidates[0]?.content?.parts?.[0]?.text) {
+        return data.candidates[0].content.parts[0].text;
+      }
 
-    return data?.candidates?.[0]?.content?.parts?.[0]?.text || "No response generated.";
-  } catch (err) {
-    console.error("Fetch Exception:", err);
-    return "❌ Network error while connecting to AI.";
+      // Agar high demand ya error ho toh 2 second wait karke retry karega
+      if (attempt < 3) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        continue;
+      }
+
+      if (data.error) {
+        return `❌ AI Error: ${data.error.message || "Server is busy."}`;
+      }
+    } catch (err) {
+      if (attempt === 3) return "❌ Network error while connecting to AI.";
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
   }
+  return "❌ AI is currently experiencing high demand. Please try again shortly.";
 }
 
 const commands = [
