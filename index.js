@@ -2,7 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const {
   Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes,
-  PermissionFlagsBits, ChannelType, AuditLogEvent
+  PermissionFlagsBits
 } = require("discord.js");
 
 const TOKEN = process.env.DISCORD_TOKEN;
@@ -10,118 +10,117 @@ const CLIENT_ID = process.env.CLIENT_ID;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const PORT = process.env.PORT || 3000;
 
-if (!TOKEN || !CLIENT_ID) {
-  console.error("❌ Missing DISCORD_TOKEN or CLIENT_ID!");
+if (!TOKEN || !CLIENT_ID || !GEMINI_API_KEY) {
+  console.error("❌ Missing DISCORD_TOKEN, CLIENT_ID, or GEMINI_API_KEY in environment variables!");
   process.exit(1);
 }
 
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildModeration,
-    GatewayIntentBits.GuildAuditLogs
+    GatewayIntentBits.GuildMembers
   ]
 });
 
-// Fast Memory Cache for Speed (No heavy file writing on every message)
-const userCache = new Map();
-const joinLog = [];
-
-// Ultra-fast Gemini AI Fetch (Non-blocking)
+// Fast Direct Gemini AI Function
 async function askAI(promptText) {
-  if (!GEMINI_API_KEY) return "❌ AI Key missing.";
   try {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ contents: [{ parts: [{ text: promptText }] }] })
     });
-    const data = await res.json();
-    return data?.candidates?.[0]?.content?.parts?.[0]?.text || "No response.";
-  } catch (e) {
-    return "❌ AI is busy right now.";
+    const data = await response.json();
+    return data?.candidates?.[0]?.content?.parts?.[0]?.text || "No response generated.";
+  } catch (err) {
+    console.error("AI Error:", err);
+    return "❌ AI is currently busy, please try again later.";
   }
 }
 
-// Register Fast Slash Commands
+// Commands list
 const commands = [
-  new SlashCommandBuilder().setName("ping").setDescription("Check bot speed/latency"),
-  new SlashCommandBuilder().setName("ai").setDescription("Ask Gemini AI instantly").addStringOption(o => o.setName("query").setDescription("Question").setRequired(true)),
-  new SlashCommandBuilder().setName("clear").setDescription("Fast purge messages").setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages).addIntegerOption(o => o.setName("count").setDescription("1-100").setRequired(true).setMinValue(1).setMaxValue(100)),
-  new SlashCommandBuilder().setName("server").setDescription("Fast server info")
+  new SlashCommandBuilder()
+    .setName("ai")
+    .setDescription("Gemini AI se kuch bhi poochein")
+    .addStringOption(option => 
+      option.setName("query").setDescription("Aapka sawal").setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName("ping")
+    .setDescription("Bot ka speed check karein"),
+  new SlashCommandBuilder()
+    .setName("clear")
+    .setDescription("Messages delete karein")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
+    .addIntegerOption(option =>
+      option.setName("count").setDescription("Kitne messages delete karne hain (1-100)").setRequired(true).setMinValue(1).setMaxValue(100)
+    )
 ].map(c => c.toJSON());
 
 client.once("ready", async () => {
-  console.log(`⚡ Lightning Fast Bot Online as ${client.user.tag}`);
+  console.log(`🚀 AI Bot online ho gaya hai: ${client.user.tag}`);
   try {
     const rest = new REST({ version: "10" }).setToken(TOKEN);
     await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
-    console.log("⚡ Slash Commands Registered Instantly!");
+    console.log("✅ Slash commands successfully register ho gayi hain!");
   } catch (e) {
-    console.error(e);
+    console.error("Command registration error:", e);
   }
 });
 
-// Instant Interaction Handler
-client.on("interactionCreate", async i => {
-  if (!i.isChatInputCommand()) return;
+// Interaction Handler (Fast AI & Commands)
+client.on("interactionCreate", async interaction => {
+  if (!interaction.isChatInputCommand()) return;
 
   try {
-    if (i.commandName === "ping") {
-      const latency = Date.now() - i.createdTimestamp;
-      return i.reply({ content: `🏓 Pong! Latency: **${latency}ms** | API: **${Math.round(client.ws.ping)}ms**`, ephemeral: true });
+    if (interaction.commandName === "ai") {
+      await interaction.deferReply();
+      const userQuery = interaction.options.getString("query");
+      const aiResponse = await askAI(userQuery);
+      
+      const finalReply = aiResponse.length > 2000 ? aiResponse.slice(0, 1997) + "..." : aiResponse;
+      return interaction.editReply(finalReply);
     }
 
-    if (i.commandName === "ai") {
-      await i.deferReply();
-      const q = i.options.getString("query");
-      const ans = await askAI(q);
-      return i.editReply(ans.length > 2000 ? ans.slice(0, 1997) + "..." : ans);
+    if (interaction.commandName === "ping") {
+      const latency = Date.now() - interaction.createdTimestamp;
+      return interaction.reply({ content: `🏓 Pong! Latency: **${latency}ms** | API Ping: **${Math.round(client.ws.ping)}ms**`, ephemeral: true });
     }
 
-    if (i.commandName === "clear") {
-      const count = i.options.getInteger("count");
-      await i.channel.bulkDelete(count, true);
-      return i.reply({ content: `🧹 Fast deleted ${count} messages.`, ephemeral: true });
-    }
-
-    if (i.commandName === "server") {
-      return i.reply(`🏠 Server: **${i.guild.name}**\n👥 Members: **${i.guild.memberCount}**`);
+    if (interaction.commandName === "clear") {
+      const count = interaction.options.getInteger("count");
+      await interaction.channel.bulkDelete(count, true);
+      return interaction.reply({ content: `🧹 Successfully **${count}** messages delete kar diye gaye hain.`, ephemeral: true });
     }
   } catch (err) {
-    if (!i.replied && !i.deferred) await i.reply({ content: "❌ Error occurred.", ephemeral: true }).catch(() => {});
+    console.error("Interaction Error:", err);
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.reply({ content: "❌ Kuch error aa gaya hai.", ephemeral: true }).catch(() => {});
+    }
   }
 });
 
-// Fast Auto-Mod & Anti-Link (Instant Deletion)
-client.on("messageCreate", async msg => {
-  if (msg.author.bot || !msg.guild) return;
+// Link Protection & Auto-Mod
+client.on("messageCreate", async message => {
+  if (message.author.bot || !message.guild) return;
 
-  // Instant Link Protection
-  if (/(https?:\/\/|www\.)\S+/i.test(msg.content) && !msg.member.permissions.has(PermissionFlagsBits.ManageMessages)) {
-    await msg.delete().catch(() => {});
-    const warning = await msg.channel.send(`⚠️ ${msg.author}, links are not allowed here!`).catch(() => null);
-    if (warning) setTimeout(() => warning.delete().catch(() => {}), 3000);
+  // Link Detector Regex
+  const linkRegex = /(https?:\/\/|www\.)\S+/i;
+  if (linkRegex.test(message.content)) {
+    if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) {
+      await message.delete().catch(() => {});
+      const warning = await message.channel.send(`⚠️ ${message.author}, is server par links bhejna allowed nahi hai!`).catch(() => null);
+      if (warning) setTimeout(() => warning.delete().catch(() => {}), 4000);
+    }
   }
 });
 
-// Anti-Raid Quick Trigger
-client.on("guildMemberAdd", async member => {
-  const now = Date.now();
-  joinLog.push(now);
-  while (joinLog.length > 0 && joinLog[0] < now - 10000) joinLog.shift();
-  
-  if (joinLog.length >= 5 && member.kickable) {
-    await member.kick("Anti-Raid Protection").catch(() => {});
-  }
-});
-
-// Lightweight Express Server for 24/7 Hosting Uptime
+// Express Server 24/7 Uptime ke liye
 const app = express();
-app.get("/", (_, res) => res.send("Bot is lightning fast and online!"));
-app.listen(PORT, () => console.log(`🌐 Fast Web Server active on port ${PORT}`));
+app.get("/", (_, res) => res.send("AI Bot is running smoothly 24/7!"));
+app.listen(PORT, () => console.log(`🌐 Web server port ${PORT} par active hai.`));
 
 client.login(TOKEN);
