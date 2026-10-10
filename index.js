@@ -1,5 +1,4 @@
 require("dotenv").config();
-
 const fs = require("fs");
 const path = require("path");
 const express = require("express");
@@ -8,29 +7,22 @@ const {
   PermissionFlagsBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder,
   ButtonStyle, ChannelType, AuditLogEvent
 } = require("discord.js");
-const { GoogleGenAI } = require("@google/genai");
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const MODEL = process.env.GEMINI_MODEL || "gemini-1.5-flash";
 const PORT = process.env.PORT || 3000;
 
-if (!TOKEN || !CLIENT_ID || !GEMINI_API_KEY) {
-  console.error("❌ Missing DISCORD_TOKEN, CLIENT_ID or GEMINI_API_KEY in Environment Variables!");
+if (!TOKEN || !CLIENT_ID) {
+  console.error("❌ Missing DISCORD_TOKEN or CLIENT_ID in environment variables!");
   process.exit(1);
 }
 
-const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+// Database & Caches
 const DATA_FILE = path.join(__dirname, "data.json");
 const DEFAULT = { guilds: {}, users: {}, warnings: {}, giveaways: {} };
-
 const joinLog = [];
 const actionCache = new Map();
-const RAID_JOIN_LIMIT = 5;
-const RAID_TIME_LIMIT = 10000;
-const NUKE_ACTION_LIMIT = 3;
-const NUKE_TIME_LIMIT = 10000;
 
 function loadData() {
   try {
@@ -38,7 +30,6 @@ function loadData() {
     const x = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
     return { ...structuredClone(DEFAULT), ...x };
   } catch (e) {
-    console.error("DATA LOAD ERROR:", e);
     return structuredClone(DEFAULT);
   }
 }
@@ -48,69 +39,35 @@ function saveData() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     try {
-      const tmp = DATA_FILE + ".tmp";
-      fs.writeFileSync(tmp, JSON.stringify(db, null, 2));
-      fs.renameSync(tmp, DATA_FILE);
-    } catch (e) { console.error("DATA SAVE ERROR:", e); }
+      fs.writeFileSync(DATA_FILE, JSON.stringify(db, null, 2));
+    } catch (e) {}
   }, 200);
 }
 
 function gd(id) {
-  db.guilds[id] ??= {
-    aiChannelId: null, welcomeChannelId: null, welcomeMessage: "Welcome {user} to {server}! 🎉",
-    antiLink: true, antiRaid: true, antiNuke: true, logChannelId: null, autoroleId: null
-  };
+  db.guilds[id] ??= { aiChannelId: null, welcomeChannelId: null, antiLink: true, antiRaid: true, antiNuke: true, logChannelId: null, autoroleId: null };
   return db.guilds[id];
 }
 function ud(guildId, userId) {
   const key = `${guildId}:${userId}`;
-  db.users[key] ??= { cash: 0, xp: 0, level: 1, lastDaily: 0, lastWork: 0, lastCrime: 0 };
+  db.users[key] ??= { cash: 100, xp: 0, level: 1, lastDaily: 0 };
   return db.users[key];
 }
-function warns(guildId, userId) {
-  const key = `${guildId}:${userId}`;
-  db.warnings[key] ??= [];
-  return db.warnings[key];
-}
 
-async function askAI(question) {
-  let last;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const r = await ai.models.generateContent({ model: MODEL, contents: question });
-      return r.text || "No response received.";
-    } catch (e) {
-      last = e;
-      const s = Number(e?.status || e?.error?.code);
-      if (![429, 500, 502, 503, 504].includes(s) &&
-          !String(e).includes("503") && !String(e).includes("429")) break;
-      await new Promise(resolve => setTimeout(resolve, 1500 * (attempt + 1)));
-    }
-  }
-  console.error("GEMINI ERROR:", last);
-  return "❌ Gemini AI is currently busy. Please try again in a few seconds.";
-}
-
-async function aiAction(text, member) {
-  const prompt = `You are Prime Development Studio AI.
-Return ONLY valid JSON: {"action":"...","data":{...}}
-Allowed actions:
-answer {text}
-addcash {userId,amount}
-removecash {userId,amount}
-setcash {userId,amount}
-addxp {userId,amount}
-setlevel {userId,level}
-antilink_on {}
-antilink_off {}
-For normal questions use answer.
-Never invent user IDs. Request: ${text}
-Requester ID: ${member.id}`;
-  const raw = await askAI(prompt);
+// Direct Native Fetch for Gemini AI (No version mismatch issues!)
+async function askGemini(promptText) {
+  if (!GEMINI_API_KEY) return "❌ Gemini API Key is missing in environment variables.";
   try {
-    return JSON.parse(raw.replace(/```json|```/g, "").trim());
-  } catch {
-    return { action: "answer", data: { text: raw } };
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ contents: [{ parts: [{ text: promptText }] }] })
+    });
+    const data = await response.json();
+    return data?.candidates?.[0]?.content?.parts?.[0]?.text || "No response generated.";
+  } catch (err) {
+    console.error("AI Error:", err);
+    return "❌ AI is currently unavailable.";
   }
 }
 
@@ -121,7 +78,6 @@ async function sendLog(guild, text) {
   if (ch) await ch.send(`📋 ${text}`).catch(() => {});
 }
 
-// Safe Client Intents Configuration to avoid BitField errors
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -133,318 +89,134 @@ const client = new Client({
   ]
 });
 
+// Commands List
 const commands = [
-  ["ai","Ask Prime AI",[["question","Question",true]]],
-  ["setaichannel","Set AI channel",[["channel","Channel",true]]],
-  ["removeaichannel","Remove AI channel",[]],
-  ["serverinfo","Server information",[]],
-  ["userinfo","User information",[["user","User",false]]],
-  ["avatar","Show avatar",[["user","User",false]]],
-  ["announce","Send announcement",[["message","Message",true]]],
-  ["welcome","Set welcome channel",[["channel","Channel",true]]],
-  ["removewelcome","Remove welcome",[]],
-  ["autorole","Set autorole",[["role","Role",true]]],
-  ["antilink","Anti-link toggle",[["mode","on/off",true]]],
-  ["antiraid","Anti-raid toggle",[["mode","on/off",true]]],
-  ["antinuke","Anti-nuke toggle",[["mode","on/off",true]]],
-  ["setlogs","Set log channel",[["channel","Channel",true]]],
-  ["clear","Delete messages",[["amount","1-100",true]]],
-  ["kick","Kick member",[["user","Member",true],["reason","Reason",false]]],
-  ["ban","Ban member",[["user","Member",true],["reason","Reason",false]]],
-  ["timeout","Timeout member",[["user","Member",true],["minutes","Minutes",true]]],
-  ["warn","Warn member",[["user","Member",true],["reason","Reason",false]]],
-  ["warnings","Show warnings",[["user","Member",true]]],
-  ["lock","Lock current channel",[]],
-  ["unlock","Unlock current channel",[]],
-  ["balance","Show balance",[["user","User",false]]],
-  ["daily","Claim daily cash",[]],
-  ["work","Work for cash",[]],
-  ["crime","Try a risky crime",[]],
-  ["pay","Pay user",[["user","User",true],["amount","Amount",true]]],
-  ["addcash","Admin: add cash",[["user","User",true],["amount","Amount",true]]],
-  ["removecash","Admin: remove cash",[["user","User",true],["amount","Amount",true]]],
-  ["rank","Show XP rank",[["user","User",false]]],
-  ["leaderboard","XP leaderboard",[]],
-  ["ticket","Create support ticket",[]],
-  ["giveaway","Start giveaway",[["minutes","Minutes",true],["prize","Prize",true]]],
-  ["help","Show all available commands",[]]
-];
-
-function buildCommand([name, desc, opts]) {
-  const c = new SlashCommandBuilder().setName(name).setDescription(desc);
-  for (const [n,d,required] of opts) {
-    if (n === "channel") c.addChannelOption(o => o.setName(n).setDescription(d).setRequired(required).addChannelTypes(ChannelType.GuildText));
-    else if (n === "role") c.addRoleOption(o => o.setName(n).setDescription(d).setRequired(required));
-    else if (n === "user") c.addUserOption(o => o.setName(n).setDescription(d).setRequired(required));
-    else if (n === "amount" || n === "minutes") c.addIntegerOption(o => o.setName(n).setDescription(d).setRequired(required).setMinValue(1).setMaxValue(n==="amount"?100000000:10080));
-    else c.addStringOption(o => o.setName(n).setDescription(d).setRequired(required));
-  }
-  if (["addcash","removecash","setaichannel","welcome","autorole","setlogs"].includes(name)) c.setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
-  return c.toJSON();
-}
-const commandData = commands.map(buildCommand);
-
-async function registerCommands() {
-  const rest = new REST({ version: "10" }).setToken(TOKEN);
-  await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commandData });
-}
-
-function isAdmin(i) {
-  return i.memberPermissions?.has(PermissionFlagsBits.Administrator);
-}
-async function requireAdmin(i) {
-  if (!isAdmin(i)) {
-    await i.reply({ content: "❌ You need Administrator permissions for this command.", ephemeral: true });
-    return false;
-  }
-  return true;
-}
+  new SlashCommandBuilder().setName("ai").setDescription("Ask Gemini AI").addStringOption(o => o.setName("question").setDescription("Your question").setRequired(true)),
+  new SlashCommandBuilder().setName("serverinfo").setDescription("View server info"),
+  new SlashCommandBuilder().setName("balance").setDescription("Check your cash balance").addUserOption(o => o.setName("user").setDescription("User").setRequired(false)),
+  new SlashCommandBuilder().setName("daily").setDescription("Claim daily cash reward"),
+  new SlashCommandBuilder().setName("rank").setDescription("Check your XP and Level"),
+  new SlashCommandBuilder().setName("leaderboard").setDescription("View XP leaderboard"),
+  new SlashCommandBuilder().setName("clear").setDescription("Delete messages").setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages).addIntegerOption(o => o.setName("amount").setDescription("1-100").setRequired(true).setMinValue(1).setMaxValue(100)),
+  new SlashCommandBuilder().setName("help").setDescription("List all commands")
+].map(c => c.toJSON());
 
 client.once("ready", async () => {
   console.log(`🚀 Logged in as ${client.user.tag}`);
-  try { await registerCommands(); console.log("✅ Slash commands auto-registered!"); }
-  catch (e) { console.error("COMMAND REGISTER ERROR:", e); }
-});
-
-client.on("interactionCreate", async i => {
   try {
-    if (i.isButton()) {
-      if (i.customId === "close_ticket") {
-        await i.reply("🔒 Closing ticket channel...");
-        setTimeout(() => i.channel.delete().catch(() => {}), 1500);
+    const rest = new REST({ version: "10" }).setToken(TOKEN);
+    await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
+    console.log("✅ Slash commands registered successfully!");
+  } catch (e) {
+    console.error("Command Registration Error:", e);
+  }
+});
+
+// Interactions Handler
+client.on("interactionCreate", async i => {
+  if (!i.isChatInputCommand() || !i.guild) return;
+  const g = i.guild, c = i.commandName;
+
+  try {
+    if (c === "ai") {
+      await i.deferReply();
+      const q = i.options.getString("question");
+      const ans = await askGemini(q);
+      return i.editReply(ans.length > 2000 ? ans.slice(0, 1997) + "..." : ans);
+    }
+    if (c === "serverinfo") {
+      return i.reply(`🏠 **${g.name}**\n👥 Members: ${g.memberCount}\n🆔 ID: ${g.id}`);
+    }
+    if (c === "balance") {
+      const u = i.options.getUser("user") || i.user;
+      return i.reply(`💰 **${u.username}** has **$${ud(g.id, u.id).cash}** cash.`);
+    }
+    if (c === "daily") {
+      const udata = ud(g.id, i.user.id), now = Date.now();
+      if (now - udata.lastDaily < 86400000) {
+        return i.reply({ content: `⏳ Claim again <t:${Math.floor((udata.lastDaily + 86400000) / 1000)}:R>.`, ephemeral: true });
       }
-      return;
+      udata.cash += 500; udata.lastDaily = now; saveData();
+      return i.reply("💵 You claimed your daily **$500** cash!");
     }
-    if (!i.isChatInputCommand() || !i.guild) return;
-
-    const g = i.guild, c = i.commandName;
-    const adminCommands = ["setaichannel","removeaichannel","welcome","removewelcome","autorole","antilink","antiraid","antinuke","setlogs","clear","kick","ban","timeout","warn","lock","unlock","announce"];
-    if (adminCommands.includes(c) && !(await requireAdmin(i))) return;
-
-    if (c === "ai") return i.reply({ content: await askAI(i.options.getString("question")), allowedMentions:{parse:[]} });
-    if (c === "setaichannel") { gd(g.id).aiChannelId=i.options.getChannel("channel").id; saveData(); return i.reply("✅ AI channel configured."); }
-    if (c === "removeaichannel") { gd(g.id).aiChannelId=null; saveData(); return i.reply("✅ AI channel removed."); }
-    if (c === "welcome") { gd(g.id).welcomeChannelId=i.options.getChannel("channel").id; saveData(); return i.reply("✅ Welcome channel set."); }
-    if (c === "removewelcome") { gd(g.id).welcomeChannelId=null; saveData(); return i.reply("✅ Welcome channel removed."); }
-    if (c === "autorole") { gd(g.id).autoroleId=i.options.getRole("role").id; saveData(); return i.reply("✅ Autorole updated."); }
-    
-    if (c === "antilink" || c === "antiraid" || c === "antinuke") {
-      const mode = i.options.getString("mode").toLowerCase();
-      if (!["on","off"].includes(mode)) return i.reply("Please use `on` or `off`.");
-      const state = mode === "on";
-      if (c === "antilink") gd(g.id).antiLink = state;
-      if (c === "antiraid") gd(g.id).antiRaid = state;
-      if (c === "antinuke") gd(g.id).antiNuke = state;
-      saveData();
-      return i.reply(`✅ **${c.toUpperCase()}** system has been turned **${mode.toUpperCase()}**.`);
+    if (c === "rank") {
+      const u = i.options.getUser("user") || i.user;
+      const udata = ud(g.id, u.id);
+      return i.reply(`📈 **${u.username}** — Level **${udata.level}** | XP: **${udata.xp}**`);
     }
-
-    if (c === "setlogs") { gd(g.id).logChannelId=i.options.getChannel("channel").id; saveData(); return i.reply("✅ Log channel set."); }
+    if (c === "leaderboard") {
+      const rows = Object.entries(db.users).filter(([k]) => k.startsWith(g.id + ":")).sort((a, b) => b[1].xp - a[1].xp).slice(0, 10);
+      return i.reply(rows.length ? `🏆 **Leaderboard**\n${rows.map(([k, d], n) => `${n + 1}. <@${k.split(":")[1]}> — Lv.${d.level} (${d.xp} XP)`).join("\n")}` : "No XP data yet.");
+    }
     if (c === "clear") {
-      const n=i.options.getInteger("amount"); await i.channel.bulkDelete(n,true);
-      return i.reply({content:`🧹 Cleared ${n} messages.`,ephemeral:true});
+      const n = i.options.getInteger("amount");
+      await i.channel.bulkDelete(n, true);
+      return i.reply({ content: `🧹 Cleared ${n} messages.`, ephemeral: true });
     }
-    if (c === "kick" || c === "ban" || c === "timeout") {
-      const m=await g.members.fetch(i.options.getUser("user").id);
-      if (c==="kick") await m.kick(i.options.getString("reason")||"No reason");
-      if (c==="ban") await m.ban({reason:i.options.getString("reason")||"No reason"});
-      if (c==="timeout") await m.timeout(i.options.getInteger("minutes")*60000);
-      await sendLog(g,`${m.user.tag} was ${c}ed by ${i.user.tag}`);
-      return i.reply(`✅ Successfully ${c}ed ${m.user.tag}.`);
+    if (c === "help") {
+      return i.reply("🤖 **Bot Commands:** `/ai`, `/serverinfo`, `/balance`, `/daily`, `/rank`, `/leaderboard`, `/clear`");
     }
-    if (c === "warn") {
-      const u=i.options.getUser("user"), reason=i.options.getString("reason")||"No reason";
-      warns(g.id,u.id).push({reason,by:i.user.id,at:Date.now()}); saveData();
-      await sendLog(g,`${u.tag} warned by ${i.user.tag}: ${reason}`);
-      return i.reply(`⚠️ Warned **${u.tag}**.`);
-    }
-    if (c === "warnings") {
-      const u=i.options.getUser("user"), w=warns(g.id,u.id);
-      return i.reply(w.length ? `⚠️ **${u.tag}** has ${w.length} warning(s):\n${w.map((x,n)=>`${n+1}.${x.reason}`).join("\n")}` : `✅ ${u.tag} has 0 warnings.`);
-    }
-    if (c==="lock" || c==="unlock") {
-      await i.channel.permissionOverwrites.edit(g.roles.everyone,{SendMessages:c==="unlock"});
-      return i.reply(c==="lock"?"🔒 Channel locked.":"🔓 Channel unlocked.");
-    }
-    if (c==="serverinfo") return i.reply(`🏠 **${g.name}**\n👥 Total Members: ${g.memberCount}\n🆔 Guild ID: ${g.id}`);
-    if (c==="userinfo") { const u=i.options.getUser("user")||i.user; return i.reply(`👤 **${u.tag}**\n🆔 User ID: ${u.id}\n📅 Account Created: <t:${Math.floor(u.createdTimestamp/1000)}:F>`); }
-    if (c==="avatar") { const u=i.options.getUser("user")||i.user; return i.reply(u.displayAvatarURL({size:1024, dynamic: true})); }
-    if (c==="announce") {
-      const e=new EmbedBuilder().setTitle("📢 Server Announcement").setDescription(i.options.getString("message")).setColor('#5865F2').setTimestamp();
-      await i.channel.send({embeds:[e]}); return i.reply({content:"✅ Announcement published.",ephemeral:true});
-    }
-
-    if (c==="balance") { const u=i.options.getUser("user")||i.user; return i.reply(`💰 **${u.username}** has **${ud(g.id,u.id).cash}** cash.`); }
-    if (["daily","work","crime"].includes(c)) {
-      const d=ud(g.id,i.user.id), now=Date.now();
-      const key=c==="daily"?"lastDaily":c==="work"?"lastWork":"lastCrime";
-      const cd=c==="daily"?86400000:3600000;
-      if(now-d[key]<cd) return i.reply({content:`⏳ You can use this command again <t:${Math.floor((d[key]+cd)/1000)}:R>.`,ephemeral:true});
-      let amount=c==="daily"?1000:Math.floor(Math.random()*501)+250;
-      if(c==="crime" && Math.random()<0.35) amount=-Math.floor(Math.random()*301)-100;
-      d.cash=Math.max(0,d.cash+amount); d[key]=now; saveData();
-      return i.reply(amount>=0?`💵 Earned **$${amount}** cash!`:`🚨 Crime failed! You lost **$${Math.abs(amount)}** cash.`);
-    }
-    if (c==="pay") {
-      const u=i.options.getUser("user"), a=i.options.getInteger("amount"), me=ud(g.id,i.user.id);
-      if(me.cash<a) return i.reply({content:"❌ Insufficient balance.",ephemeral:true});
-      me.cash-=a; ud(g.id,u.id).cash+=a; saveData(); return i.reply(`💸 Sent **$${a}** cash to ${u}.`);
-    }
-    if (c==="addcash" || c==="removecash") {
-      if(!(await requireAdmin(i))) return;
-      const u=i.options.getUser("user"), a=i.options.getInteger("amount"), d=ud(g.id,u.id);
-      d.cash=Math.max(0,d.cash+(c==="addcash"?a:-a)); saveData(); return i.reply(`✅ Updated ${u}'s balance to **$${d.cash}**.`);
-    }
-    if(c==="rank"){const u=i.options.getUser("user")||i.user,d=ud(g.id,u.id);return i.reply(`📈 **${u.username}** — Level ${d.level} | XP: ${d.xp}`);}
-    if(c==="leaderboard"){
-      const rows=Object.entries(db.users).filter(([k])=>k.startsWith(g.id+":")).sort((a,b)=>b[1].xp-a[1].xp).slice(0,10);
-      return i.reply(rows.length?`🏆 **Server Leaderboard**\n${rows.map(([k,d],n)=>`${n+1}. <@${k.split(":")[1]}> — Lv.${d.level} (${d.xp} XP)`).join("\n")}`:"No active data.");
-    }
-    if(c==="ticket"){
-      const safe=i.user.username.toLowerCase().replace(/[^a-z0-9-]/g,"").slice(0,70)||"user";
-      const ch=await g.channels.create({name:`ticket-${safe}`,type:ChannelType.GuildText,permissionOverwrites:[
-        {id:g.roles.everyone.id,deny:[PermissionFlagsBits.ViewChannel]},
-        {id:i.user.id,allow:[PermissionFlagsBits.ViewChannel,PermissionFlagsBits.SendMessages,PermissionFlagsBits.ReadMessageHistory]}
-      ]});
-      await ch.send({content:`🎫 Hello ${i.user}, support will assist you shortly.`,components:[new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId("close_ticket").setLabel("Close Ticket").setStyle(ButtonStyle.Danger))]});
-      return i.reply({content:`✅ Ticket opened: ${ch}`,ephemeral:true});
-    }
-    if(c==="giveaway"){
-      if(!(await requireAdmin(i))) return;
-      const minutes=i.options.getInteger("minutes"), prize=i.options.getString("prize"), end=Date.now()+minutes*60000;
-      const msg=await i.channel.send({embeds:[new EmbedBuilder().setTitle("🎉 GIVEAWAY 🎉").setDescription(`Prize: **${prize}**\nReact with 🎉 to enter!\nEnds <t:${Math.floor(end/1000)}:R>`).setColor('#F1C40F').setTimestamp(end)]});
-      await msg.react("🎉");
-      db.giveaways[msg.id]={guildId:g.id,channelId:i.channel.id,prize,end}; saveData();
-      setTimeout(()=>finishGiveaway(msg.id),minutes*60000);
-      return i.reply({content:"✅ Giveaway active.",ephemeral:true});
-    }
-    if(c==="help") return i.reply("🤖 **Prime AI Bot Commands**\n\n🔹 **AI:** `/ai`, `/setaichannel`\n🔹 **Moderation:** `/ban`, `/kick`, `/timeout`, `/warn`, `/warnings`, `/clear`, `/lock`, `/unlock`\n🔹 **Security:** `/antilink`, `/antiraid`, `/antinuke`\n🔹 **Economy:** `/balance`, `/daily`, `/work`, `/crime`, `/pay`, `/addcash`\n🔹 **XP System:** `/rank`, `/leaderboard`\n🔹 **Community:** `/ticket`, `/giveaway`, `/welcome`, `/autorole`, `/setlogs`\n🔹 **Utility:** `/serverinfo`, `/userinfo`, `/avatar`, `/announce`");
-  } catch(e) {
-    console.error("COMMAND ERROR:",e);
-    if(!i.replied && !i.deferred) await i.reply({content:"❌ Execution failed.",ephemeral:true}).catch(()=>{});
+  } catch (err) {
+    console.error(err);
+    if (!i.replied && !i.deferred) await i.reply({ content: "❌ An error occurred.", ephemeral: true }).catch(() => {});
   }
 });
 
-async function finishGiveaway(id){
-  const g=db.giveaways[id]; if(!g) return;
-  try{
-    const ch=await client.channels.fetch(g.channelId), msg=await ch.messages.fetch(id);
-    const reaction=msg.reactions.cache.get("🎉");
-    const users=reaction?await reaction.users.fetch():new Map();
-    const entries=[...users.values()].filter(u=>!u.bot);
-    if(!entries.length) await ch.send("🎉 Giveaway ended, but nobody joined.");
-    else await ch.send(`🎉 Congratulations ${entries[Math.floor(Math.random()*entries.length)]}! You won **${g.prize}**!`);
-  }catch(e){console.error("GIVEAWAY ERROR:",e);}
-  delete db.giveaways[id]; saveData();
-}
+// Auto-Mod & Anti-Link & XP System
+client.on("messageCreate", async msg => {
+  if (msg.author.bot || !msg.guild) return;
+  const g = gd(msg.guild.id);
 
-async function handleAntiNuke(guild, executorId, actionType) {
-  const g = gd(guild.id);
-  if (!g.antiNuke || executorId === client.user.id || executorId === guild.ownerId) return;
-
-  const now = Date.now();
-  const userActions = actionCache.get(executorId) || [];
-  const recentActions = userActions.filter(time => now - time < NUKE_TIME_LIMIT);
-  
-  recentActions.push(now);
-  actionCache.set(executorId, recentActions);
-
-  if (recentActions.length >= NUKE_ACTION_LIMIT) {
-    try {
-      const member = await guild.members.fetch(executorId).catch(() => null);
-      if (member && member.bannable) {
-        await member.ban({ reason: `Anti-Nuke Protection Triggered: Mass ${actionType}` });
-        await sendLog(guild, `🚨 **ANTI-NUKE BANNED** ${member.user.tag} for deleting channels/roles.`);
-      }
-    } catch (err) {
-      console.error('Anti-Nuke Action Error:', err);
-    }
-  }
-}
-
-client.on('channelDelete', async (channel) => {
-  if (!channel.guild) return;
-  const logs = await channel.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.ChannelDelete }).catch(() => null);
-  const entry = logs?.entries.first();
-  if (entry) handleAntiNuke(channel.guild, entry.executor.id, 'Channels');
-});
-
-client.on('roleDelete', async (role) => {
-  if (!role.guild) return;
-  const logs = await role.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.RoleDelete }).catch(() => null);
-  const entry = logs?.entries.first();
-  if (entry) handleAntiNuke(role.guild, entry.executor.id, 'Roles');
-});
-
-client.on("messageCreate", async msg=>{
-  if(msg.author.bot || !msg.guild) return;
-  const g=gd(msg.guild.id);
-
-  if(g.antiLink && /(https?:\/\/|www\.)\S+/i.test(msg.content) && !msg.member.permissions.has(PermissionFlagsBits.ManageMessages)){
-    await msg.delete().catch(()=>{});
-    const m=await msg.channel.send(`🔗 ${msg.author}, links are strictly prohibited in this server.`).catch(()=>null);
-    if(m) setTimeout(()=>m.delete().catch(()=>{}),5000);
-    await sendLog(msg.guild,`${msg.author.tag} tried posting links.`);
+  // Anti-Link
+  if (g.antiLink && /(https?:\/\/|www\.)\S+/i.test(msg.content) && !msg.member.permissions.has(PermissionFlagsBits.ManageMessages)) {
+    await msg.delete().catch(() => {});
+    const m = await msg.channel.send(`🔗 ${msg.author}, links are not allowed here!`).catch(() => null);
+    if (m) setTimeout(() => m.delete().catch(() => {}), 4000);
     return;
   }
 
-  const d=ud(msg.guild.id,msg.author.id);
-  d.xp+=5;
-  if(d.xp>=d.level*100){
-    d.xp-=d.level*100; d.level++;
-    msg.channel.send(`🎉 Congratulations ${msg.author}, you leveled up to **Level ${d.level}**!`).catch(()=>{});
+  // XP System
+  const udata = ud(msg.guild.id, msg.author.id);
+  udata.xp += 10;
+  if (udata.xp >= udata.level * 100) {
+    udata.xp -= udata.level * 100;
+    udata.level++;
+    msg.channel.send(`🎉 Congrats ${msg.author}, you leveled up to **Level ${udata.level}**!`).catch(() => {});
   }
   saveData();
-
-  if(g.aiChannelId===msg.channel.id){
-    const result=await aiAction(msg.content,msg.member);
-    const adminOnly=["addcash","removecash","setcash","addxp","setlevel","antilink_on","antilink_off"];
-    if(result.action==="answer") return msg.reply({content:result.data?.text||"No response.",allowedMentions:{parse:[]}});
-    if(adminOnly.includes(result.action) && !msg.member.permissions.has(PermissionFlagsBits.Administrator))
-      return msg.reply("❌ Administrator permissions required.");
-    const id=result.data?.userId;
-    if(["addcash","removecash","setcash","addxp","setlevel"].includes(result.action) && !id)
-      return msg.reply("❌ Explicit user ID/mention required.");
-    if(result.action==="addcash") ud(msg.guild.id,id).cash+=Math.max(0,Number(result.data.amount)||0);
-    else if(result.action==="removecash") ud(msg.guild.id,id).cash=Math.max(0,ud(msg.guild.id,id).cash-Math.max(0,Number(result.data.amount)||0));
-    else if(result.action==="setcash") ud(msg.guild.id,id).cash=Math.max(0,Number(result.data.amount)||0);
-    else if(result.action==="addxp") ud(msg.guild.id,id).xp+=Math.max(0,Number(result.data.amount)||0);
-    else if(result.action==="setlevel") ud(msg.guild.id,id).level=Math.max(1,Number(result.data.level)||1);
-    else if(result.action==="antilink_on") g.antiLink=true;
-    else if(result.action==="antilink_off") g.antiLink=false;
-    else return msg.reply("❌ Could not execute command safely.");
-    saveData(); return msg.reply("✅ Action completed successfully.");
-  }
 });
 
-client.on("guildMemberAdd",async member=>{
-  const g=gd(member.guild.id);
-
-  if(g.antiRaid){
+// Anti-Raid & Anti-Nuke Protections
+client.on("guildMemberAdd", async member => {
+  const g = gd(member.guild.id);
+  if (g.antiRaid) {
     const now = Date.now();
     joinLog.push(now);
-    while (joinLog.length > 0 && joinLog[0] < now - RAID_TIME_LIMIT) joinLog.shift();
-
-    if (joinLog.length >= RAID_JOIN_LIMIT) {
-      if (member.kickable) {
-        await member.kick('Anti-Raid Auto Defense Triggered');
-        await sendLog(member.guild, `🚨 **ANTI-RAID:** Kicked incoming user ${member.user.tag}`);
-        return;
-      }
+    while (joinLog.length > 0 && joinLog[0] < now - 10000) joinLog.shift();
+    if (joinLog.length >= 5 && member.kickable) {
+      await member.kick("Anti-Raid Triggered");
+      return;
     }
-  }
-
-  if(g.autoroleId) await member.roles.add(g.autoroleId).catch(()=>{});
-  
-  if(g.welcomeChannelId){
-    const ch=member.guild.channels.cache.get(g.welcomeChannelId);
-    if(ch) ch.send(g.welcomeMessage.replaceAll("{user}",`${member}`).replaceAll("{server}",member.guild.name)).catch(()=>{});
   }
 });
 
-const app=express();
-app.get("/",(_,res)=>res.send("Prime Development Studio Bot (V9 Ultra) Active."));
-app.get("/health",(_,res)=>res.json({ok:true,model:MODEL,status:"Online"}));
-app.listen(PORT,()=>console.log(`🌐 Web interface active on port ${PORT}`));
+client.on("channelDelete", async channel => {
+  if (!channel.guild) return;
+  const g = gd(channel.guild.id);
+  if (!g.antiNuke) return;
+  const logs = await channel.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.ChannelDelete }).catch(() => null);
+  const entry = logs?.entries.first();
+  if (entry && entry.executor.id !== client.user.id && entry.executor.id !== channel.guild.ownerId) {
+    const member = await channel.guild.members.fetch(entry.executor.id).catch(() => null);
+    if (member && member.bannable) {
+      await member.ban({ reason: "Anti-Nuke: Channel Deletion Protection" });
+    }
+  }
+});
 
-client.login(TOKEN).catch(e=>{console.error("DISCORD LOGIN ERROR:",e);process.exit(1);});
+// Express Web Server for Render 24/7 Uptime
+const app = express();
+app.get("/", (_, res) => res.send("Bot is running perfectly."));
+app.listen(PORT, () => console.log(`🌐 Web server running on port ${PORT}`));
+
+client.login(TOKEN).catch(e => console.error("Login Failed:", e));
